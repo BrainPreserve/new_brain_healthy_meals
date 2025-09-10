@@ -21,6 +21,7 @@
     },
     keyColumns:   ['ingredient_name', 'ingredient', 'food', 'item', 'name'],
     aliasColumns: ['aliases', 'alias', 'also_known_as'],
+    // IMPORTANT: keep true to avoid "no tables" if some flow forgets to pass ingredients.
     renderAllWhenNoIngredients: true
   };
 
@@ -30,8 +31,8 @@
   const DATA = {
     loaded: false,
     master: [],
-    masterIndex: new Map(),
-    aliasToCanon: new Map(),
+    masterIndex: new Map(),   // normName -> CanonicalName
+    aliasToCanon: new Map(),  // normAlias -> CanonicalName
     tables: { nutrition: [], cognitive: [], diet: [], micro: [] }
   };
 
@@ -42,12 +43,14 @@
     return String(s || '')
       .normalize('NFKC')
       .toLowerCase()
-      .replace(/[^\p{Letter}\p{Number}\s\-\/&'().,]/gu, '')
+      .replace(/[^\p{Letter}\p{Number}\s\-\/&'().,]/gu, '') // keep common punctuation
       .replace(/\s+/g, ' ')
       .trim();
   }
 
+  // --- Robust mojibake fixer ---
   function maybeRecodeUTF8(s) {
+    // If text looks garbled (Latin-1 mis-decoded UTF-8), reinterpret.
     const suspect = /[ÃÂâ€¢]|â|Ã¢Â|Ãƒ|ï¿½/.test(s);
     if (!suspect) return s;
     try {
@@ -56,46 +59,54 @@
       const score = t => (t.match(/[ÃÂâ€¢]|â|Ã¢Â|Ãƒ|ï¿½/g) || []).length;
       if (score(decoded) <= score(s)) s = decoded;
     } catch (_) {}
-    if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1);
+    if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1); // strip BOM
     return s;
   }
 
+  // Display sanitizer — includes stubborn sequences + U+FFFD (�) removal
   function cleanDisplay(val) {
     let s = String(val ?? '');
     s = s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-    s = s.replace(/\u00A0/g, ' ');
+    s = s.replace(/\u00A0/g, ' ');      // NBSP → space
     s = maybeRecodeUTF8(s);
 
     const replacements = [
+      // Single quotes (’ ‘) — includes exact "Ã¢ÂÂ"
       [/Ã¢ÂÂ|Ã¢Â€Â™|â€™|â/g, '’'],
       [/Ã¢ÂÂ˜|Ã¢Â€Â˜|â€˜|â˜/g, '‘'],
+      // Double quotes (“ ”)
       [/Ã¢ÂÂœ|Ã¢Â€Âœ|â€œ|â/g, '“'],
       [/Ã¢ÂÂ�|Ã¢Â€Â�|â€|â/g, '”'],
+      // Dashes
       [/Ã¢ÂÂ“|Ã¢Â€Â“|â€“|â/g, '–'],
       [/Ã¢ÂÂ”|Ã¢Â€Â”|â€”|â/g, '—'],
+      // Ellipsis
       [/Ã¢ÂÂ¦|Ã¢Â€Â¦|â€¦|â¦/g, '…'],
+      // Stray "Â"/"Ã‚"
       [/Ã‚|Â/g, '']
     ];
     for (const [pat, rep] of replacements) s = s.replace(pat, rep);
 
-    s = s.replace(/\uFFFD\s*–/g, '–');
-    s = s.replace(/–\s*\uFFFD/g, '–');
-    s = s.replace(/\uFFFD\s*-\s*/g, '-');
-    s = s.replace(/-\s*\uFFFD/g, '-');
-    s = s.replace(/\uFFFD+/g, '');
+    // Explicitly remove the Unicode replacement char (�) and common combos
+    s = s.replace(/\uFFFD\s*–/g, '–');  // �– → –
+    s = s.replace(/–\s*\uFFFD/g, '–');  // –� → –
+    s = s.replace(/\uFFFD\s*-\s*/g, '-'); // �- → -
+    s = s.replace(/-\s*\uFFFD/g, '-');    // -� → -
+    s = s.replace(/\uFFFD+/g, '');        // any remaining �
 
     s = s.replace(/[ \t]{2,}/g, ' ');
     return s.trim();
   }
 
+  // Hide phantom headers (_1, Unnamed: 1, Column3) and empty-for-all columns
   function isHeaderNameOk(name) {
     if (!name) return false;
     const t = String(name).trim();
     if (!t) return false;
     const l = t.toLowerCase();
-    if (l === '_' || /^_+\d*$/.test(l)) return false;
-    if (/^unnamed/i.test(t)) return false;
-    if (/^column\d+$/i.test(t)) return false;
+    if (l === '_' || /^_+\d*$/.test(l)) return false;        // _ or __ or _1
+    if (/^unnamed/i.test(t)) return false;                   // Unnamed: 1
+    if (/^column\d+$/i.test(t)) return false;                // Column1, Column2
     return true;
   }
 
@@ -108,6 +119,7 @@
     return headers;
   }
 
+  // Drop rows where every cell is blank
   function dropEmptyRows(rows) {
     return (rows || []).filter(row =>
       Object.values(row).some(v => String(v ?? '').trim() !== '')
@@ -133,6 +145,7 @@
     return String(val).split(/[;,]/g).map(x => norm(x)).filter(Boolean);
   }
 
+  // CSV loader with pre-parse mojibake repair
   function csv(path) {
     return new Promise((resolve, reject) => {
       Papa.parse(path, {
@@ -149,6 +162,7 @@
         },
         complete: (res) => {
           const rows = dropEmptyRows(res.data || []);
+          // Light clean pass for all string fields
           for (const row of rows) {
             for (const k of Object.keys(row)) {
               const v = row[k];
@@ -196,11 +210,11 @@
       const c = lookupCanonical(name) || String(name || '').trim();
       if (c) out.push(c);
     });
-    return Array.from(new Set(out));
+    return Array.from(new Set(out)); // unique
   }
 
   function filterByIngredients(tableRows, ingredientSet) {
-    if (!ingredientSet || ingredientSet.size === 0) return tableRows.slice();
+    if (!ingredientSet || ingredientSet.size === 0) return tableRows.slice(); // fallback: ALL
     const out = [];
     for (const row of tableRows) {
       const keyVal = getKeyValue(row);
@@ -216,18 +230,24 @@
   // =========================
   async function loadAll() {
     if (DATA.loaded) return;
+
+    // Load master first (aliases)
     DATA.master = await csv(CFG.paths.master);
     buildMasterIndexes();
+
+    // Load the four tables
     DATA.tables.nutrition = await csv(CFG.paths.nutrition);
     DATA.tables.cognitive = await csv(CFG.paths.cognitive);
     DATA.tables.diet      = await csv(CFG.paths.diet);
     DATA.tables.micro     = await csv(CFG.paths.micro);
+
     DATA.loaded = true;
   }
 
   function createTable(title, rows) {
     const box = document.createElement('div');
     box.className = 'card';
+
     const h = document.createElement('h3');
     h.textContent = title;
     box.appendChild(h);
@@ -242,6 +262,7 @@
 
     const headers = chooseHeaders(rows);
     const table = document.createElement('table');
+
     const thead = document.createElement('thead');
     const trh = document.createElement('tr');
     headers.forEach(col => {
@@ -264,6 +285,7 @@
       tbody.appendChild(tr);
     });
     table.appendChild(tbody);
+
     box.appendChild(table);
     return box;
   }
@@ -271,26 +293,41 @@
   function renderAllTables(ingredientList) {
     const mount = document.getElementById('bp-nutrition');
     if (!mount) return;
+
+    // Clear existing
     mount.innerHTML = '';
+
+    // Canonicalize supplied ingredients (from recipe or selections)
     const canonList = canonicalizeList(ingredientList);
     const ingredientSet = new Set(canonList);
+
+    // Filter each table (ALL if empty set and fallback enabled)
     const base = CFG.renderAllWhenNoIngredients && ingredientSet.size === 0;
     const t1 = base ? DATA.tables.nutrition.slice() : filterByIngredients(DATA.tables.nutrition, ingredientSet);
     const t2 = base ? DATA.tables.cognitive.slice() : filterByIngredients(DATA.tables.cognitive, ingredientSet);
     const t3 = base ? DATA.tables.diet.slice()      : filterByIngredients(DATA.tables.diet,      ingredientSet);
     const t4 = base ? DATA.tables.micro.slice()     : filterByIngredients(DATA.tables.micro,     ingredientSet);
-    const any = (t1 && t1.length) || (t2 && t2.length) || (t3 && t3.length) || (t4 && t4.length);
+
+    const any =
+      (t1 && t1.length) ||
+      (t2 && t2.length) ||
+      (t3 && t3.length) ||
+      (t4 && t4.length);
+
     if (!any) return;
-    mount.appendChild(createTable('Nutrition', t1));
-    mount.appendChild(createTable('Cognitive Benefits', t2));
-    mount.appendChild(createTable('Diet Compatibility', t3));
-    mount.appendChild(createTable('Gut Health / Microbiome Support', t4));
+
+    mount.appendChild(createTable('Nutrition',                        t1));
+    mount.appendChild(createTable('Cognitive Benefits',               t2));
+    mount.appendChild(createTable('Diet Compatibility',               t3));
+    mount.appendChild(createTable('Gut Health / Microbiome Support',  t4));
   }
 
   // =========================
   // PUBLIC API
   // =========================
   window.BP = window.BP || {};
+
+  // Main entry: call with an array of ingredient names (strings)
   window.BP.renderTables = async function (ingredientsArray) {
     try {
       await loadAll();
@@ -308,14 +345,18 @@
     }
   };
 
+  // Phrase-based detector (optional use by your page)
   window.BP.deriveIngredientsFromRecipe = function (text) {
     if (!text || typeof text !== 'string') return [];
     const hay = ' ' + norm(text) + ' ';
     const found = new Set();
+
+    // Try canonical names
     for (const canonName of DATA.masterIndex.values()) {
       const needle = ' ' + norm(canonName) + ' ';
       if (hay.indexOf(needle) !== -1) found.add(canonName);
     }
+    // Try aliases
     for (const [aliasNorm, canonName] of DATA.aliasToCanon.entries()) {
       const needle = ' ' + aliasNorm + ' ';
       if (hay.indexOf(needle) !== -1) found.add(canonName);
@@ -324,7 +365,7 @@
   };
 
   // =========================
-  // UI ENHANCEMENT: Auto-inject "Number of recipes"
+  // UI ENHANCEMENT: Auto-inject "Number of recipes" (no edits to index.html)
   // =========================
   (function () {
     function injectNumChooser(){
@@ -333,20 +374,25 @@
           .find(b => (b.getAttribute('onclick')||'').includes('generateFromSelections'));
         if (!btn) return;
         const btnRow = btn.closest('.btn-row') || btn.parentElement;
-        if (!btnRow || document.getElementById('num-recipes-form')) return;
+        if (!btnRow || document.getElementById('num-recipes-form')) return; // avoid duplicates
+
         const wrap = document.createElement('div');
         wrap.className = 'row';
+
         const label = document.createElement('label');
         label.setAttribute('for', 'num-recipes-form');
         label.textContent = 'Number of recipes (optional):';
+
         const input = document.createElement('input');
         input.id = 'num-recipes-form';
         input.type = 'number';
         input.min = '1';
         input.max = '10';
         input.placeholder = '3–5';
+
         wrap.appendChild(label);
         wrap.appendChild(input);
+
         btnRow.parentElement.insertBefore(wrap, btnRow);
       } catch (_) {}
     }
@@ -354,9 +400,11 @@
     function wrapGenerateFromSelections(){
       if (typeof window.generateFromSelections !== 'function' || window._bpPatchedSelections) return;
       const original = window.generateFromSelections;
+
       window.generateFromSelections = async function(...args){
         const numEl = document.getElementById('num-recipes-form');
         const n = numEl ? parseInt(numEl.value, 10) : NaN;
+
         if (Number.isFinite(n) && typeof window.callOpenAI === 'function') {
           const origCall = window.callOpenAI;
           window.callOpenAI = async function(messages, ...rest){
@@ -375,6 +423,7 @@
         }
         return original.apply(this, args);
       };
+
       window._bpPatchedSelections = true;
     }
 
@@ -386,6 +435,7 @@
     }
   })();
 
+  // Preload data so it's ready when renderTables(...) is called
   if (document && document.addEventListener) {
     document.addEventListener('DOMContentLoaded', () => {
       loadAll().catch(() => {});
@@ -393,16 +443,27 @@
   }
 })();
 
-/* ========= BrainPreserve UI Enhancer (Standalone) v1.3 ========= */
+/* ========= BrainPreserve UI Enhancer (Standalone) v1.3 =========
+   Anchor strategy:
+   - Locate the button whose onclick contains "generateFromSelections"
+   - Treat the nearest <form> as the selector; if none, use nearest container with multiple inputs
+   Features:
+   - Collapsible wrapper (closed by default)
+   - Clear Form (Top) wired or injected; Clear Form (Bottom) always injected under results
+   - Full reset (inputs/radios/checkboxes), recollapse groups, reset Number-of-Recipes to 5
+   - Retries for late rendering; exposes window._bpEnhancerVersion = "1.3"
+*/
 (() => {
   const DEBUG = true;
   const log = (...a) => DEBUG && console.log('[BP-Enhancer v1.3]', ...a);
 
+  // ---------- helpers ----------
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
   const first = (sels, r = document) => sels.map(sel => $(sel, r)).find(Boolean) || null;
 
   function findSelectionsButton() {
+    // Same heuristic used by the number-chooser above
     const buttons = $$('button');
     return buttons.find(b => (b.getAttribute('onclick') || '').includes('generateFromSelections')) || null;
   }
@@ -415,7 +476,7 @@
     while (node && node !== document.body) {
       if (['DIV','SECTION','ARTICLE','MAIN'].includes(node.tagName)) {
         const inputs = node.querySelectorAll('input,select,textarea').length;
-        if (inputs >= 4) return node;
+        if (inputs >= 4) return node; // looks like the selector pane
       }
       node = node.parentElement;
     }
@@ -424,8 +485,13 @@
 
   function findOutputRoot() {
     return (
-      $('#output') || $('#results') || $('#tables-container') ||
-      $('.recipes-output') || $('.results') || $('main') || document.body
+      $('#output') ||
+      $('#results') ||
+      $('#tables-container') ||
+      $('.recipes-output') ||
+      $('.results') ||
+      $('main') ||
+      document.body
     );
   }
 
@@ -439,5 +505,158 @@
       ...$$('section', root),
       ...$$('div', root)
     ];
-    return Array.from(new Set(raw)).filter(el =>
-      el.querySelector && el
+    const uniq = Array.from(new Set(raw)).filter(el =>
+      el.querySelector && el.querySelector('input[type="checkbox"]')
+    );
+    return uniq;
+  }
+
+  // ---------- reset actions ----------
+  function collapse(el) {
+    if (!el) return;
+    if (el.tagName && el.tagName.toLowerCase() === 'details') { el.open = false; return; }
+    el.style.display = 'none';
+  }
+  function recollapseAll(root) {
+    groupCandidates(root).forEach(g => {
+      $$('input[type="checkbox"]', g).forEach(cb => cb.checked = false);
+      collapse(g);
+    });
+  }
+  function resetRadios(root) { $$('input[type="radio"]', root).forEach(r => r.checked = false); }
+  function resetTextish(root) {
+    $$('input[type="text"], input[type="search"], input[type="email"], input[type="number"], textarea', root)
+      .forEach(i => i.value = '');
+    $$('select', root).forEach(sel => { if (sel.multiple) Array.from(sel.options).forEach(o => o.selected=false); else sel.selectedIndex = 0; });
+  }
+  function resetNumRecipes() {
+    const candidates = [
+      '#num-recipes-form', '#num-recipes', '[name="numRecipes"]', '[data-bp="num-recipes"]'
+    ];
+    let el = first(candidates) ||
+             $$('input[type="number"], select').find(e =>
+               /recipe|num/i.test(e.name || '') || /recipe|num/i.test(e.id || '')
+             );
+    if (!el) return;
+    if (el.tagName && el.tagName.toLowerCase() === 'select') {
+      const idx = Array.from(el.options).findIndex(o => (o.value || o.textContent).trim() === '5');
+      el.selectedIndex = idx >= 0 ? idx : 0;
+    } else {
+      el.value = '5';
+    }
+  }
+  function fullClear(root) {
+    resetTextish(root);
+    resetRadios(root);
+    recollapseAll(root);
+    resetNumRecipes();
+  }
+
+  // ---------- UI injection ----------
+  function ensureStyles() {
+    if ($('#bp-enhancer-style')) return;
+    const st = document.createElement('style');
+    st.id = 'bp-enhancer-style';
+    st.textContent = `
+      .bp-collapser > summary {
+        list-style: none; cursor: pointer; user-select: none;
+        padding: 10px 14px; margin: 0 0 10px 0;
+        border: 1px solid #ddd; border-radius: 10px; background: #fafafa; font-weight: 600;
+      }
+      .bp-collapser[open] > summary { background: #f0f0f0; }
+      .bp-btn-clear {
+        border: 1px solid #ccc; border-radius: 10px; padding: 8px 12px;
+        font-size: 14px; cursor: pointer; background: #f7f7f7;
+      }
+      .bp-btn-clear:hover { background: #efefef; }
+      .bp-top-clear-wrap { margin: 10px 0 16px 0; text-align: right; }
+    `;
+    document.head.appendChild(st);
+  }
+
+  function ensureCollapsible(root) {
+    if (root.closest('.bp-collapser')) return;
+    const details = document.createElement('details');
+    details.className = 'bp-collapser';
+    details.open = false;
+    const summary = document.createElement('summary');
+    summary.textContent = 'Ingredient Selector (click to open)';
+    const host = document.createElement('div');
+    host.className = 'bp-collapser-host';
+    details.appendChild(summary);
+    details.appendChild(host);
+    root.parentNode.insertBefore(details, root);
+    host.appendChild(root);
+  }
+
+  function ensureTopClear(root) {
+    // If a Clear button already exists near the selector, wire it; otherwise inject our own.
+    let btn = root.querySelector('#clear-form, [data-action="clear-form"], button.clear-form');
+    if (!btn) {
+      const wrap = document.createElement('div');
+      wrap.className = 'bp-top-clear-wrap';
+      btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'bp-btn-clear';
+      btn.textContent = 'Clear Form';
+      wrap.appendChild(btn);
+      const details = root.closest('.bp-collapser') || root;
+      details.parentNode.insertBefore(wrap, details.nextSibling);
+    }
+    if (!btn.dataset.bpBound) {
+      btn.dataset.bpBound = '1';
+      btn.addEventListener('click', () => fullClear(root));
+    }
+  }
+
+  function ensureBottomClear(root) {
+    const out = findOutputRoot();
+    if (!out || $('.bp-bottom-clear', out)) return;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'bp-bottom-clear bp-btn-clear';
+    btn.textContent = 'Clear Form (Bottom)';
+    Object.assign(btn.style, { display: 'block', margin: '24px auto' });
+    btn.addEventListener('click', () => {
+      fullClear(root);
+      root.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    out.appendChild(btn);
+  }
+
+  // ---------- Boot (anchor to generateFromSelections button) ----------
+  function initOnce() {
+    const selBtn = findSelectionsButton();
+    if (!selBtn) { log('Selections button not found yet'); return false; }
+    const root = nearestContainer(selBtn);
+    if (!root) { log('Could not determine selector container near the button'); return false; }
+
+    ensureStyles();
+    ensureCollapsible(root);
+    ensureTopClear(root);
+    ensureBottomClear(root);
+
+    // Persist bottom clear across re-renders
+    const mo = new MutationObserver(() => ensureBottomClear(root));
+    mo.observe(document.body, { childList: true, subtree: true });
+
+    window._bpEnhancerVersion = '1.3';
+    log('Initialized on container:', root);
+    return true;
+  }
+
+  // Retry for late-rendered UIs
+  let attempts = 0;
+  function spin() {
+    if (initOnce()) return;
+    attempts++;
+    if (attempts < 50) setTimeout(spin, 200);
+    else log('Stopped retrying (no selections button / container found).');
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', spin);
+  } else {
+    spin();
+  }
+})();
