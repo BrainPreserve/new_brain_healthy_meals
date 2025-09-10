@@ -1,9 +1,10 @@
-/* BrainPreserve tables module — single drop-in file
-   - Loads: /data/master.csv + 4 table CSVs
-   - Filters tables to ONLY supplied/detected ingredients (case-insensitive; alias-aware)
-   - If no ingredients are supplied, shows a small note (does NOT dump all rows)
-   - Cleans mojibake artifacts on display (Â, â€“, smart quotes, NBSP)
-   - Drops blank CSV rows (commas-only) and hides always-empty/phantom columns
+/* BrainPreserve tables module — strict render-on-ingredients only
+   Behavior:
+   - Renders tables ONLY when called with >=1 ingredient.
+   - Filters to ONLY those ingredients (case-insensitive; alias-aware via master.csv).
+   - If called with no/empty/unknown ingredients → renders nothing (no full-table dump, no note).
+   - Cleans mojibake (Â, Ã‚, â€“/—/…/smart quotes, including "Ã¢ÂÂ").
+   - Drops blank CSV rows (commas-only) and hides always-empty/phantom columns.
 
    Requirements in index.html:
      <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
@@ -16,25 +17,24 @@
   // =========================
   const CFG = {
     paths: {
-      master: '/data/master.csv',
-      nutrition: '/data/table_nutrition.csv',
-      cognitive: '/data/table_cognitive_benefits.csv',
-      diet:      '/data/table_diet_compatibility.csv',
-      micro:     '/data/table_microbiome.csv'
+      master:   '/data/master.csv',
+      nutrition:'/data/table_nutrition.csv',
+      cognitive:'/data/table_cognitive_benefits.csv',
+      diet:     '/data/table_diet_compatibility.csv',
+      micro:    '/data/table_microbiome.csv'
     },
     keyColumns:   ['ingredient_name', 'ingredient', 'food', 'item', 'name'],
-    aliasColumns: ['aliases', 'alias', 'also_known_as'],
-    renderWhenNoIngredients: false  // <- do NOT show all rows if none provided
+    aliasColumns: ['aliases', 'alias', 'also_known_as']
   };
 
   // =========================
-  // DATA CONTAINERS
+  // DATA
   // =========================
   const DATA = {
     loaded: false,
     master: [],
-    masterIndex: new Map(),  // normName -> CanonicalName (as written in CSV)
-    aliasToCanon: new Map(), // normAlias -> CanonicalName
+    masterIndex: new Map(),   // normName -> CanonicalName (preserve CSV casing for display)
+    aliasToCanon: new Map(),  // normAlias -> CanonicalName
     tables: { nutrition: [], cognitive: [], diet: [], micro: [] }
   };
 
@@ -57,13 +57,13 @@
         header: true,
         dynamicTyping: false,
         skipEmptyLines: true,
-        complete: (res) => resolve(res.data || []),
+        complete: res => resolve(res.data || []),
         error: reject
       });
     });
   }
 
-  // Remove rows that are effectively empty: every cell blank after trim
+  // Remove lines that are effectively blank (e.g., ",,,,,,,")
   function dropEmptyRows(rows) {
     return (rows || []).filter(row =>
       Object.values(row).some(v => String(v ?? '').trim() !== '')
@@ -73,16 +73,19 @@
   // Clean mojibake & typography glitches for display
   function cleanDisplay(val) {
     return String(val ?? '')
-      .replace(/\u00A0/g, ' ')          // NBSP → space
-      .replace(/Ã‚Â/g, '')              // stray Â
-      // en-dash / em-dash common mojibake → proper
-      .replace(/ÂÂ|â€“|Ã¢â‚¬â€œ/g, '–')
-      .replace(/ÂÂ|â€”|Ã¢â‚¬”/g, '—')
+      // NBSP & stray "Â"/"Ã‚"
+      .replace(/\u00A0/g, ' ')
+      .replace(/Â/g, '')
+      .replace(/Ã‚/g, '')
+      // dashes
+      .replace(/Ã¢ÂÂ|â€“|Ã¢â‚¬â€œ|â/g, '–')  // en dash
+      .replace(/Ã¢ÂÂ”|â€”|Ã¢â‚¬”|â/g, '—')  // em dash
       // ellipsis
-      .replace(/ÂÂ¦|â€¦|Ã¢â‚¬Â¦/g, '…')
-      // smart quotes → straight
-      .replace(/â€œ|â€|Ã¢â‚¬Å“|Ã¢â‚¬Â/g, '"')
-      .replace(/â€˜|â€™|Ã¢â‚¬Ëœ|Ã¢â‚¬â„¢/g, "'")
+      .replace(/Ã¢ÂÂ¦|â€¦|Ã¢â‚¬Â¦|â¦/g, '…')
+      // smart quotes (double)
+      .replace(/Ã¢ÂÂœ|Ã¢ÂÂ�|â€œ|â€|Ã¢â‚¬Å“|Ã¢â‚¬Â/g, '"')
+      // smart quotes (single) — include the specific issue "Ã¢ÂÂ"
+      .replace(/Ã¢ÂÂ|â€™|Ã¢â‚¬â„¢|â€˜|Ã¢â‚¬Ëœ|â|â˜/g, "'")
       .trim();
   }
 
@@ -102,7 +105,10 @@
 
   function splitAliases(val) {
     if (val == null || val === '') return [];
-    return String(val).split(/[;,]/g).map(x => norm(x)).filter(Boolean);
+    return String(val)
+      .split(/[;,]/g)
+      .map(x => norm(x))
+      .filter(Boolean);
   }
 
   function isHeaderNameOk(name) {
@@ -120,12 +126,9 @@
     if (!rows || rows.length === 0) return [];
     // Union of keys across all rows (some CSVs vary per row)
     const all = new Set();
-    for (const r of rows) {
-      Object.keys(r).forEach(k => all.add(k));
-    }
-    // Drop bad/phantom headers
+    for (const r of rows) Object.keys(r).forEach(k => all.add(k));
+    // Drop bad/phantom headers and those empty for ALL rows
     let headers = Array.from(all).filter(isHeaderNameOk);
-    // Drop headers that are empty for ALL rows
     headers = headers.filter(h => rows.some(r => String(r[h] ?? '').trim() !== ''));
     return headers;
   }
@@ -137,9 +140,8 @@
     for (const row of DATA.master) {
       const rawName = getKeyValue(row);
       if (!rawName) continue;
-      const canonName = String(rawName).trim(); // preserve original case for display
-      const normName = norm(rawName);
-
+      const canonName = String(rawName).trim();
+      const normName  = norm(rawName);
       if (!DATA.masterIndex.has(normName)) DATA.masterIndex.set(normName, canonName);
 
       const aliasField = pick(row, CFG.aliasColumns);
@@ -169,7 +171,6 @@
   }
 
   function filterByIngredients(tableRows, ingredientSet) {
-    // If we are not supposed to render when empty, return [] immediately
     if (!ingredientSet || ingredientSet.size === 0) return [];
     const out = [];
     for (const row of tableRows) {
@@ -182,16 +183,16 @@
   }
 
   // =========================
-  // LOADING & RENDERING
+  // LOAD & RENDER
   // =========================
   async function loadAll() {
     if (DATA.loaded) return;
 
-    // Master first (aliases)
+    // Load master first (aliases)
     DATA.master = dropEmptyRows(await csv(CFG.paths.master));
     buildMasterIndexes();
 
-    // The four per-table CSVs
+    // Load the four tables
     DATA.tables.nutrition = dropEmptyRows(await csv(CFG.paths.nutrition));
     DATA.tables.cognitive = dropEmptyRows(await csv(CFG.paths.cognitive));
     DATA.tables.diet      = dropEmptyRows(await csv(CFG.paths.diet));
@@ -250,21 +251,15 @@
     const mount = document.getElementById('bp-nutrition');
     if (!mount) return;
 
-    // Clear mount
+    // Clear existing
     mount.innerHTML = '';
 
     // Canonicalize supplied ingredients (from recipe or selections)
     const canonList = canonicalizeList(ingredientList);
     const ingredientSet = new Set(canonList);
 
-    // If we require ingredients but none are present, show a small note and stop
-    if (!CFG.renderWhenNoIngredients && ingredientSet.size === 0) {
-      const note = document.createElement('div');
-      note.className = 'status';
-      note.textContent = 'Tables will appear after ingredients are detected or selected.';
-      mount.appendChild(note);
-      return;
-    }
+    // STRICT GATE: if no valid ingredients, render nothing
+    if (ingredientSet.size === 0) return;
 
     // Filter each table
     const t1 = filterByIngredients(DATA.tables.nutrition, ingredientSet);
@@ -272,33 +267,20 @@
     const t3 = filterByIngredients(DATA.tables.diet,      ingredientSet);
     const t4 = filterByIngredients(DATA.tables.micro,     ingredientSet);
 
-    // Optional: status line listing detected ingredients
-    if (ingredientSet.size > 0) {
-      const status = document.createElement('div');
-      status.className = 'status';
-      status.textContent = `Showing tables for: ${Array.from(ingredientSet).join(', ')}`;
-      mount.appendChild(status);
-    }
-
-    // Render only if there are matches; otherwise show a gentle message
+    // If literally nothing matched, do nothing
     const any =
       (t1 && t1.length) ||
       (t2 && t2.length) ||
       (t3 && t3.length) ||
       (t4 && t4.length);
 
-    if (!any) {
-      const p = document.createElement('div');
-      p.className = 'status';
-      p.textContent = 'No matching rows were found for the selected ingredients.';
-      mount.appendChild(p);
-      return;
-    }
+    if (!any) return;
 
-    mount.appendChild(createTable('Nutrition',                     t1));
-    mount.appendChild(createTable('Cognitive Benefits',            t2));
-    mount.appendChild(createTable('Diet Compatibility',            t3));
-    mount.appendChild(createTable('Gut Health / Microbiome Support', t4));
+    // Render only the matched data
+    mount.appendChild(createTable('Nutrition',                        t1));
+    mount.appendChild(createTable('Cognitive Benefits',               t2));
+    mount.appendChild(createTable('Diet Compatibility',               t3));
+    mount.appendChild(createTable('Gut Health / Microbiome Support',  t4));
   }
 
   // =========================
@@ -324,7 +306,7 @@
     }
   };
 
-  // Stronger phrase-based detector (used by your page if it calls this)
+  // Phrase-based detector for your page (optional use by your app)
   window.BP.deriveIngredientsFromRecipe = function (text) {
     if (!text || typeof text !== 'string') return [];
     const hay = ' ' + norm(text) + ' ';
@@ -343,7 +325,7 @@
     return Array.from(found);
   };
 
-  // Preload data shortly after page load so lookups are ready
+  // Preload data so it's ready when you call renderTables(…)
   if (document && document.addEventListener) {
     document.addEventListener('DOMContentLoaded', () => {
       loadAll().catch(() => {});
