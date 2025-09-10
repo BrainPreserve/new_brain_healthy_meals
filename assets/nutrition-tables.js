@@ -71,23 +71,51 @@
   }
 
   // Clean mojibake & typography glitches for display
-  function cleanDisplay(val) {
-    return String(val ?? '')
-      // NBSP & stray "Â"/"Ã‚"
-      .replace(/\u00A0/g, ' ')
-      .replace(/Â/g, '')
-      .replace(/Ã‚/g, '')
-      // dashes
-      .replace(/Ã¢ÂÂ|â€“|Ã¢â‚¬â€œ|â/g, '–')  // en dash
-      .replace(/Ã¢ÂÂ”|â€”|Ã¢â‚¬”|â/g, '—')  // em dash
-      // ellipsis
-      .replace(/Ã¢ÂÂ¦|â€¦|Ã¢â‚¬Â¦|â¦/g, '…')
-      // smart quotes (double)
-      .replace(/Ã¢ÂÂœ|Ã¢ÂÂ�|â€œ|â€|Ã¢â‚¬Å“|Ã¢â‚¬Â/g, '"')
-      // smart quotes (single) — include the specific issue "Ã¢ÂÂ"
-      .replace(/Ã¢ÂÂ|â€™|Ã¢â‚¬â„¢|â€˜|Ã¢â‚¬Ëœ|â|â˜/g, "'")
-      .trim();
+  // REPLACE your existing cleanDisplay with this version
+function cleanDisplay(val) {
+  let s = String(val ?? '');
+
+  // Normalize line breaks and spaces
+  s = s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  s = s.replace(/\u00A0/g, ' '); // NBSP → space
+
+  // Quick removals of common stray chars that appear with mojibake
+  s = s.replace(/Â/g, '');   // stray Â
+  s = s.replace(/Ã‚/g, '');  // stray Ã‚
+
+  // Targeted mojibake fixes (UTF-8 seen as Latin-1 -> rendered as odd sequences)
+  // Covers your specific issue "Ã¢ÂÂ" plus related punctuation families.
+  const map = {
+    // SINGLE QUOTES (’ ‘)
+    'Ã¢ÂÂ': '’', 'Ã¢Â€Â™': '’', 'â€™': '’', 'â': '’',
+    'Ã¢ÂÂ˜': '‘', 'Ã¢Â€Â˜': '‘', 'â€˜': '‘', 'â˜': '‘',
+
+    // DOUBLE QUOTES (“ ”)
+    'Ã¢ÂÂœ': '“', 'Ã¢Â€Âœ': '“', 'â€œ': '“',
+    'Ã¢ÂÂ�': '”', 'Ã¢Â€Â�': '”', 'â€': '”', 'â': '”',
+
+    // DASHES (– —)
+    'Ã¢ÂÂ“': '–', 'Ã¢Â€Â“': '–', 'â€“': '–', 'â': '–',
+    'Ã¢ÂÂ”': '—', 'Ã¢Â€Â”': '—', 'â€”': '—', 'â': '—',
+
+    // ELLIPSIS (…)
+    'Ã¢ÂÂ¦': '…', 'Ã¢Â€Â¦': '…', 'â€¦': '…', 'â¦': '…',
+
+    // Directional / formatting marks sometimes leaking into CSVs
+    'Ã¢Â€Âª': '', 'Ã¢Â€Â«': '', 'Ã¢Â€Â¬': '',
+    'â€ª': '',   'â€«': '',   'â€¬': ''
+  };
+
+  for (const [bad, good] of Object.entries(map)) {
+    if (s.includes(bad)) s = s.split(bad).join(good);
   }
+
+  // Collapse repeated spaces that can result from replacements
+  s = s.replace(/[ \t]{2,}/g, ' ');
+
+  return s.trim();
+}
+
 
   function pick(obj, candidateKeys) {
     const keys = Object.keys(obj);
