@@ -455,7 +455,211 @@
    - Full reset: text/number/select/textarea/radios/checkboxes, recollapse groups,
      reset Number-of-Recipes (#num-recipes-form and “num/recipe” lookalikes)
    - Waits/retries for late-rendered UIs; exposes version flag "1.3"
-*/
-(() => {
-  const DEBUG = true;
+  const log = (...a) => DEBUG && console.log('[BP-Enhancer v1.3]', ...a);
+
+  // ---------- helpers ----------
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+  const first = (sels, r = document) => sels.map(sel => $(sel, r)).find(Boolean) || null;
+
+  function findSelectionsButton() {
+    // same heuristic your number-chooser code uses
+    const buttons = $$('button');
+    return buttons.find(b => (b.getAttribute('onclick') || '').includes('generateFromSelections')) || null;
+  }
+
+  function nearestContainer(el) {
+    if (!el) return null;
+    const form = el.closest('form');
+    if (form) return form;
+    let node = el;
+    while (node && node !== document.body) {
+      if (['DIV','SECTION','ARTICLE','MAIN'].includes(node.tagName)) {
+        const inputs = node.querySelectorAll('input,select,textarea').length;
+        if (inputs >= 4) return node; // looks like the selector pane
+      }
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function findOutputRoot() {
+    return (
+      $('#output') ||
+      $('#results') ||
+      $('#tables-container') ||
+      $('.recipes-output') ||
+      $('.results') ||
+      $('main') ||
+      document.body
+    );
+  }
+
+  function groupCandidates(root) {
+    const raw = [
+      ...$$('details.category', root),
+      ...$$('.category-group', root),
+      ...$$('.ingredient-category', root),
+      ...$$('[data-category]', root),
+      ...$$('fieldset', root),
+      ...$$('section', root),
+      ...$$('div', root)
+    ];
+    const uniq = Array.from(new Set(raw)).filter(el =>
+      el.querySelector && el.querySelector('input[type="checkbox"]')
+    );
+    return uniq;
+  }
+
+  // ---------- reset actions ----------
+  function collapse(el) {
+    if (!el) return;
+    if (el.tagName && el.tagName.toLowerCase() === 'details') { el.open = false; return; }
+    el.style.display = 'none';
+  }
+  function recollapseAll(root) {
+    groupCandidates(root).forEach(g => {
+      $$('input[type="checkbox"]', g).forEach(cb => cb.checked = false);
+      collapse(g);
+    });
+  }
+  function resetRadios(root) { $$('input[type="radio"]', root).forEach(r => r.checked = false); }
+  function resetTextish(root) {
+    $$('input[type="text"], input[type="search"], input[type="email"], input[type="number"], textarea', root)
+      .forEach(i => i.value = '');
+    $$('select', root).forEach(sel => { if (sel.multiple) Array.from(sel.options).forEach(o => o.selected=false); else sel.selectedIndex = 0; });
+  }
+  function resetNumRecipes() {
+    const candidates = [
+      '#num-recipes-form', '#num-recipes', '[name="numRecipes"]',
+      '[data-bp="num-recipes"]'
+    ];
+    let el = first(candidates) ||
+             $$('input[type="number"], select').find(e =>
+               /recipe|num/i.test(e.name || '') || /recipe|num/i.test(e.id || '')
+             );
+    if (!el) return;
+    if (el.tagName && el.tagName.toLowerCase() === 'select') {
+      const idx = Array.from(el.options).findIndex(o => (o.value || o.textContent).trim() === '5');
+      el.selectedIndex = idx >= 0 ? idx : 0;
+    } else {
+      el.value = '5';
+    }
+  }
+  function fullClear(root) {
+    resetTextish(root);
+    resetRadios(root);
+    recollapseAll(root);
+    resetNumRecipes();
+  }
+
+  // ---------- UI injection ----------
+  function ensureStyles() {
+    if ($('#bp-enhancer-style')) return;
+    const st = document.createElement('style');
+    st.id = 'bp-enhancer-style';
+    st.textContent = `
+      .bp-collapser > summary {
+        list-style: none; cursor: pointer; user-select: none;
+        padding: 10px 14px; margin: 0 0 10px 0;
+        border: 1px solid #ddd; border-radius: 10px; background: #fafafa; font-weight: 600;
+      }
+      .bp-collapser[open] > summary { background: #f0f0f0; }
+      .bp-btn-clear {
+        border: 1px solid #ccc; border-radius: 10px; padding: 8px 12px;
+        font-size: 14px; cursor: pointer; background: #f7f7f7;
+      }
+      .bp-btn-clear:hover { background: #efefef; }
+      .bp-top-clear-wrap { margin: 10px 0 16px 0; text-align: right; }
+    `;
+    document.head.appendChild(st);
+  }
+
+  function ensureCollapsible(root) {
+    if (root.closest('.bp-collapser')) return;
+    const details = document.createElement('details');
+    details.className = 'bp-collapser';
+    details.open = false;
+    const summary = document.createElement('summary');
+    summary.textContent = 'Ingredient Selector (click to open)';
+    const host = document.createElement('div');
+    host.className = 'bp-collapser-host';
+    details.appendChild(summary);
+    details.appendChild(host);
+    root.parentNode.insertBefore(details, root);
+    host.appendChild(root);
+  }
+
+  function ensureTopClear(root) {
+    let btn = root.querySelector('#clear-form, [data-action="clear-form"], button.clear-form');
+    if (!btn) {
+      const wrap = document.createElement('div');
+      wrap.className = 'bp-top-clear-wrap';
+      btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'bp-btn-clear';
+      btn.textContent = 'Clear Form';
+      wrap.appendChild(btn);
+      const details = root.closest('.bp-collapser') || root;
+      details.parentNode.insertBefore(wrap, details.nextSibling);
+    }
+    if (!btn.dataset.bpBound) {
+      btn.dataset.bpBound = '1';
+      btn.addEventListener('click', () => fullClear(root));
+    }
+  }
+
+  function ensureBottomClear(root) {
+    const out = findOutputRoot();
+    if (!out || $('.bp-bottom-clear', out)) return;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'bp-bottom-clear bp-btn-clear';
+    btn.textContent = 'Clear Form (Bottom)';
+    Object.assign(btn.style, { display: 'block', margin: '24px auto' });
+    btn.addEventListener('click', () => {
+      fullClear(root);
+      root.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    out.appendChild(btn);
+  }
+
+  // ---------- Boot (anchor to generateFromSelections button) ----------
+  function initOnce() {
+    const selBtn = findSelectionsButton();
+    if (!selBtn) { log('Selections button not found yet'); return false; }
+    const root = nearestContainer(selBtn);
+    if (!root) { log('Could not determine selector container near the button'); return false; }
+
+    ensureStyles();
+    ensureCollapsible(root);
+    ensureTopClear(root);
+    ensureBottomClear(root);
+
+    // Persist bottom clear across re-renders
+    const mo = new MutationObserver(() => ensureBottomClear(root));
+    mo.observe(document.body, { childList: true, subtree: true });
+
+    window._bpEnhancerVersion = '1.3';
+    log('Initialized on container:', root);
+    return true;
+  }
+
+  // Retry for late-rendered UIs
+  let attempts = 0;
+  function spin() {
+    if (initOnce()) return;
+    attempts++;
+    if (attempts < 50) setTimeout(spin, 200);
+    else log('Stopped retrying (no selections button / container found).');
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', spin);
+  } else {
+    spin();
+  }
+})();
+
+
  
