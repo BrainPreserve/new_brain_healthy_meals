@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Tables Test</title>
+  <style>
+    body{font-family:system-ui,Arial,sans-serif;max-width:980px;margin:28px auto;padding:0 16px;background:#f7f8fb}
+    .card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:18px;box-shadow:0 4px 14px rgba(0,0,0,.04);margin:18px 0}
+    .muted{color:#667085}
+    table{width:100%;border-collapse:collapse;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden}
+    th,td{padding:10px;border-bottom:1px solid #f1f5f9}
+    thead tr{background:#f9fafb}
+    .status{font-size:12px;color:#475467;margin:8px 0}
+    .error{color:#b42318;background:#fef3f2;border:1px solid #fed7d7;padding:8px;border-radius:8px;margin-top:8px}
+  </style>
+</head>
+<body>
+  <h1>Tables Self-Test</h1>
+  <p class="muted">If your CSVs and script are set up correctly, four tables will appear below (may take 1–2 seconds).</p>
+
+  <div id="bp-nutrition"></div>
+
+  <!-- Required scripts: PapaParse first, then your tables loader -->
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="/assets/nutrition-tables.js"></script>
+  <script>
+    // Call with no ingredients to show ALL rows from each table
+    if (window.BP && typeof window.BP.renderTables === 'function') {
+      window.BP.renderTables(); // no args = show all
+    } else {
+      const m = document.getElementById('bp-nutrition');
+      m.innerHTML = '<div class="error">Could not find /assets/nutrition-tables.js. Make sure the file exists and is named exactly.</div>';
+    }
+  </script>
+</body>
+</html>
