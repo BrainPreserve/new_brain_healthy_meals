@@ -1,14 +1,12 @@
-/* BrainPreserve tables module — mojibake fix edition
-   Focus: aggressively fix encoding artifacts (e.g., Ã¢ÂÂ) coming from CSV exports.
-   - Pre-fix CSV text before PapaParse reads it (beforeFirstChunk)
-   - Sanitize again on display (cleanDisplay)
-   - Leaves your rendering behavior otherwise unchanged
-
-   Requirements in index.html:
-     <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
-     <script src="/assets/nutrition-tables.js"></script>
-     <div id="bp-nutrition"></div>
+/* BrainPreserve tables module — SAFE RESET (renders-all fallback) + Mojibake fix + No-HTML number chooser
+   What this version guarantees:
+   - If NO ingredients are provided to renderTables(...), it shows ALL rows (safe fallback).
+   - If ingredients ARE provided, it filters to ONLY those rows (case-insensitive; alias-aware via master.csv).
+   - Aggressively cleans mojibake (Ã¢ÂÂ etc.) and removes the replacement char (�), including combos like "�–".
+   - Drops blank CSV rows and hides phantom/always-empty columns.
+   - Auto-injects a "Number of recipes (optional)" input above the selections button WITHOUT editing index.html.
 */
+
 (function () {
   // =========================
   // CONFIG
@@ -22,7 +20,10 @@
       micro:    '/data/table_microbiome.csv'
     },
     keyColumns:   ['ingredient_name', 'ingredient', 'food', 'item', 'name'],
-    aliasColumns: ['aliases', 'alias', 'also_known_as']
+    aliasColumns: ['aliases', 'alias', 'also_known_as'],
+    // IMPORTANT: keep true to avoid "no tables" if some flow forgets to pass ingredients.
+    // In normal app use (ingredients are passed), filtering still applies.
+    renderAllWhenNoIngredients: true
   };
 
   // =========================
@@ -31,7 +32,7 @@
   const DATA = {
     loaded: false,
     master: [],
-    masterIndex: new Map(),   // normName -> CanonicalName (preserve CSV casing for display)
+    masterIndex: new Map(),   // normName -> CanonicalName
     aliasToCanon: new Map(),  // normAlias -> CanonicalName
     tables: { nutrition: [], cognitive: [], diet: [], micro: [] }
   };
@@ -49,101 +50,56 @@
   }
 
   // --- Robust mojibake fixer ---
-  // If text contains typical mojibake markers (Ã, Â, â, etc.), reinterpret
-  // its 0–255 char codes as bytes and decode as UTF-8. Then apply targeted replacements.
   function maybeRecodeUTF8(s) {
-    const suspect = /[ÃÂâ€¢]|â|Ã¢Â|Ãƒ|ï¿½/.test(s); // includes replacement char pattern and common combos
+    // If text looks garbled (Latin-1 mis-decoded UTF-8), reinterpret.
+    const suspect = /[ÃÂâ€¢]|â|Ã¢Â|Ãƒ|ï¿½/.test(s);
     if (!suspect) return s;
-
     try {
-      // Re-interpret current string's code points as Latin-1 bytes, then decode as UTF-8
       const bytes = Uint8Array.from([...s].map(ch => ch.charCodeAt(0) & 0xFF));
       const decoded = new TextDecoder('utf-8').decode(bytes);
-
-      // Choose the version with fewer mojibake markers
-      const score = (t) => (t.match(/[ÃÂâ€¢]|â|Ã¢Â|Ãƒ|ï¿½/g) || []).length;
+      const score = t => (t.match(/[ÃÂâ€¢]|â|Ã¢Â|Ãƒ|ï¿½/g) || []).length;
       if (score(decoded) <= score(s)) s = decoded;
-    } catch (_) {
-      // ignore and keep original
-    }
-
-    // Also strip UTF-8 BOM if present
-    if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1);
-
+    } catch (_) {}
+    if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1); // strip BOM
     return s;
   }
 
-  // REPLACE your existing cleanDisplay with this version
-function cleanDisplay(val) {
-  let s = String(val ?? '');
+  // Display sanitizer — includes stubborn sequences + U+FFFD (�) removal
+  function cleanDisplay(val) {
+    let s = String(val ?? '');
+    s = s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    s = s.replace(/\u00A0/g, ' ');      // NBSP → space
+    s = maybeRecodeUTF8(s);
 
-  // Normalize basic whitespace
-  s = s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  s = s.replace(/\u00A0/g, ' '); // NBSP → space
+    const replacements = [
+      // Single quotes (’ ‘) — includes exact "Ã¢ÂÂ"
+      [/Ã¢ÂÂ|Ã¢Â€Â™|â€™|â/g, '’'],
+      [/Ã¢ÂÂ˜|Ã¢Â€Â˜|â€˜|â˜/g, '‘'],
+      // Double quotes (“ ”)
+      [/Ã¢ÂÂœ|Ã¢Â€Âœ|â€œ|â/g, '“'],
+      [/Ã¢ÂÂ�|Ã¢Â€Â�|â€|â/g, '”'],
+      // Dashes
+      [/Ã¢ÂÂ“|Ã¢Â€Â“|â€“|â/g, '–'],
+      [/Ã¢ÂÂ”|Ã¢Â€Â”|â€”|â/g, '—'],
+      // Ellipsis
+      [/Ã¢ÂÂ¦|Ã¢Â€Â¦|â€¦|â¦/g, '…'],
+      // Stray "Â"/"Ã‚"
+      [/Ã‚|Â/g, '']
+    ];
+    for (const [pat, rep] of replacements) s = s.replace(pat, rep);
 
-  // Try a robust re-decode if the string looks garbled
-  s = (function maybeRecodeUTF8(x) {
-    const suspect = /[ÃÂâ€¢]|â|Ã¢Â|Ãƒ|ï¿½/.test(x);
-    if (!suspect) return x;
-    try {
-      const bytes = Uint8Array.from([...x].map(ch => ch.charCodeAt(0) & 0xFF));
-      const decoded = new TextDecoder('utf-8').decode(bytes);
-      const score = t => (t.match(/[ÃÂâ€¢]|â|Ã¢Â|Ãƒ|ï¿½/g) || []).length;
-      if (score(decoded) <= score(x)) x = decoded;
-    } catch (_) {}
-    if (x.charCodeAt(0) === 0xFEFF) x = x.slice(1); // strip BOM
-    return x;
-  })(s);
+    // Explicitly remove the Unicode replacement char (�) and common combos
+    s = s.replace(/\uFFFD\s*–/g, '–');  // �– → –
+    s = s.replace(/–\s*\uFFFD/g, '–');  // –� → –
+    s = s.replace(/\uFFFD\s*-\s*/g, '-'); // �- → -
+    s = s.replace(/-\s*\uFFFD/g, '-');    // -� → -
+    s = s.replace(/\uFFFD+/g, '');        // any remaining �
 
-  // ---- Hard fixes for known mojibake sequences ----
-  const map = {
-    // SINGLE QUOTES (’ ‘) — includes your exact issue "Ã¢ÂÂ"
-    'Ã¢ÂÂ': '’', 'Ã¢Â€Â™': '’', 'â€™': '’', 'â': '’',
-    'Ã¢ÂÂ˜': '‘', 'Ã¢Â€Â˜': '‘', 'â€˜': '‘', 'â˜': '‘',
-    // DOUBLE QUOTES (“ ”)
-    'Ã¢ÂÂœ': '“', 'Ã¢Â€Âœ': '“', 'â€œ': '“', 'â': '“',
-    'Ã¢ÂÂ�': '”', 'Ã¢Â€Â�': '”', 'â€': '”', 'â': '”',
-    // DASHES (– —)
-    'Ã¢ÂÂ“': '–', 'Ã¢Â€Â“': '–', 'â€“': '–', 'â': '–',
-    'Ã¢ÂÂ”': '—', 'Ã¢Â€Â”': '—', 'â€”': '—', 'â': '—',
-    // ELLIPSIS (…)
-    'Ã¢ÂÂ¦': '…', 'Ã¢Â€Â¦': '…', 'â€¦': '…', 'â¦': '…',
-    // Stray “Â”/“Ã‚”
-    'Â': '', 'Ã‚': ''
-  };
-  for (const [bad, good] of Object.entries(map)) {
-    if (s.includes(bad)) s = s.split(bad).join(good);
-  }
-
-  // ---- Explicitly remove the Unicode replacement char (� = U+FFFD) ----
-  // Handle combos like "�–" or "–�" first, then drop any remaining � safely.
-  s = s.replace(/\uFFFD\s*–/g, '–');  // �– → –
-  s = s.replace(/–\s*\uFFFD/g, '–');  // –� → –
-  s = s.replace(/\uFFFD\s*-\s*/g, '-'); // �- → -
-  s = s.replace(/-\s*\uFFFD/g, '-');    // -� → -
-  s = s.replace(/\uFFFD+/g, '');        // remove any leftover �
-
-  // Collapse extra spaces created by replacements
-  s = s.replace(/[ \t]{2,}/g, ' ');
-
-  return s.trim();
-}
-
-
-    // Collapse excessive spaces created by replacements
     s = s.replace(/[ \t]{2,}/g, ' ');
-
     return s.trim();
   }
 
-  // Remove lines that are effectively blank (e.g., ",,,,,,,")
-  function dropEmptyRows(rows) {
-    return (rows || []).filter(row =>
-      Object.values(row).some(v => String(v ?? '').trim() !== '')
-    );
-  }
-
-  // Hide phantom headers: _1, Unnamed: 1, Column3, or columns empty for every row
+  // Hide phantom headers (_1, Unnamed: 1, Column3) and empty-for-all columns
   function isHeaderNameOk(name) {
     if (!name) return false;
     const t = String(name).trim();
@@ -162,6 +118,13 @@ function cleanDisplay(val) {
     let headers = Array.from(all).filter(isHeaderNameOk);
     headers = headers.filter(h => rows.some(r => String(r[h] ?? '').trim() !== ''));
     return headers;
+  }
+
+  // Drop rows where every cell is blank
+  function dropEmptyRows(rows) {
+    return (rows || []).filter(row =>
+      Object.values(row).some(v => String(v ?? '').trim() !== '')
+    );
   }
 
   function pick(obj, candidateKeys) {
@@ -183,7 +146,7 @@ function cleanDisplay(val) {
     return String(val).split(/[;,]/g).map(x => norm(x)).filter(Boolean);
   }
 
-  // --- CSV loader with pre-parse mojibake repair ---
+  // CSV loader with pre-parse mojibake repair
   function csv(path) {
     return new Promise((resolve, reject) => {
       Papa.parse(path, {
@@ -192,8 +155,7 @@ function cleanDisplay(val) {
         dynamicTyping: false,
         skipEmptyLines: true,
         beforeFirstChunk: function (chunk) {
-          // Strip BOM and try re-decode if garbled, then normalize line endings
-          let fixed = chunk;
+          let fixed = chunk || '';
           if (fixed && fixed.charCodeAt(0) === 0xFEFF) fixed = fixed.slice(1);
           fixed = maybeRecodeUTF8(fixed);
           fixed = fixed.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
@@ -201,7 +163,7 @@ function cleanDisplay(val) {
         },
         complete: (res) => {
           const rows = dropEmptyRows(res.data || []);
-          // Clean all string fields once up-front (light pass)
+          // Light clean pass for all string fields
           for (const row of rows) {
             for (const k of Object.keys(row)) {
               const v = row[k];
@@ -253,7 +215,7 @@ function cleanDisplay(val) {
   }
 
   function filterByIngredients(tableRows, ingredientSet) {
-    if (!ingredientSet || ingredientSet.size === 0) return [];
+    if (!ingredientSet || ingredientSet.size === 0) return tableRows.slice(); // fallback: ALL
     const out = [];
     for (const row of tableRows) {
       const keyVal = getKeyValue(row);
@@ -340,16 +302,13 @@ function cleanDisplay(val) {
     const canonList = canonicalizeList(ingredientList);
     const ingredientSet = new Set(canonList);
 
-    // If no valid ingredients, render nothing (no full-table dump)
-    if (ingredientSet.size === 0) return;
+    // Filter each table (ALL if empty set and fallback enabled)
+    const base = CFG.renderAllWhenNoIngredients && ingredientSet.size === 0;
+    const t1 = base ? DATA.tables.nutrition.slice() : filterByIngredients(DATA.tables.nutrition, ingredientSet);
+    const t2 = base ? DATA.tables.cognitive.slice() : filterByIngredients(DATA.tables.cognitive, ingredientSet);
+    const t3 = base ? DATA.tables.diet.slice()      : filterByIngredients(DATA.tables.diet,      ingredientSet);
+    const t4 = base ? DATA.tables.micro.slice()     : filterByIngredients(DATA.tables.micro,     ingredientSet);
 
-    // Filter each table
-    const t1 = filterByIngredients(DATA.tables.nutrition, ingredientSet);
-    const t2 = filterByIngredients(DATA.tables.cognitive, ingredientSet);
-    const t3 = filterByIngredients(DATA.tables.diet,      ingredientSet);
-    const t4 = filterByIngredients(DATA.tables.micro,     ingredientSet);
-
-    // If literally nothing matched, do nothing
     const any =
       (t1 && t1.length) ||
       (t2 && t2.length) ||
@@ -358,7 +317,6 @@ function cleanDisplay(val) {
 
     if (!any) return;
 
-    // Render only the matched data
     mount.appendChild(createTable('Nutrition',                        t1));
     mount.appendChild(createTable('Cognitive Benefits',               t2));
     mount.appendChild(createTable('Diet Compatibility',               t3));
@@ -388,7 +346,7 @@ function cleanDisplay(val) {
     }
   };
 
-  // Phrase-based detector for your page (optional use by your app)
+  // Phrase-based detector (optional use by your page)
   window.BP.deriveIngredientsFromRecipe = function (text) {
     if (!text || typeof text !== 'string') return [];
     const hay = ' ' + norm(text) + ' ';
@@ -407,7 +365,78 @@ function cleanDisplay(val) {
     return Array.from(found);
   };
 
-  // Preload data so it's ready when you call renderTables(…)
+  // =========================
+  // UI ENHANCEMENT: Auto-inject "Number of recipes" (no edits to index.html)
+  // =========================
+  (function () {
+    function injectNumChooser(){
+      try {
+        const btn = Array.from(document.querySelectorAll('button'))
+          .find(b => (b.getAttribute('onclick')||'').includes('generateFromSelections'));
+        if (!btn) return;
+        const btnRow = btn.closest('.btn-row') || btn.parentElement;
+        if (!btnRow || document.getElementById('num-recipes-form')) return; // avoid duplicates
+
+        const wrap = document.createElement('div');
+        wrap.className = 'row';
+
+        const label = document.createElement('label');
+        label.setAttribute('for', 'num-recipes-form');
+        label.textContent = 'Number of recipes (optional):';
+
+        const input = document.createElement('input');
+        input.id = 'num-recipes-form';
+        input.type = 'number';
+        input.min = '1';
+        input.max = '10';
+        input.placeholder = '3–5';
+
+        wrap.appendChild(label);
+        wrap.appendChild(input);
+
+        btnRow.parentElement.insertBefore(wrap, btnRow);
+      } catch (_) {}
+    }
+
+    function wrapGenerateFromSelections(){
+      if (typeof window.generateFromSelections !== 'function' || window._bpPatchedSelections) return;
+      const original = window.generateFromSelections;
+
+      window.generateFromSelections = async function(...args){
+        const numEl = document.getElementById('num-recipes-form');
+        const n = numEl ? parseInt(numEl.value, 10) : NaN;
+
+        if (Number.isFinite(n) && typeof window.callOpenAI === 'function') {
+          const origCall = window.callOpenAI;
+          window.callOpenAI = async function(messages, ...rest){
+            try {
+              const msgs = Array.isArray(messages) ? messages.map(m => ({...m})) : [];
+              const i = msgs.findIndex(m => m && m.role === 'user' && typeof m.content === 'string');
+              if (i >= 0) {
+                msgs[i].content = msgs[i].content.replace(/^Generate\s+.*?recipes\.\s*\n?/i, '');
+                msgs[i].content = `Generate ${n} recipes.\n` + msgs[i].content;
+              }
+              return await origCall.call(this, msgs, ...rest);
+            } finally {
+              window.callOpenAI = origCall;
+            }
+          };
+        }
+        return original.apply(this, args);
+      };
+
+      window._bpPatchedSelections = true;
+    }
+
+    if (document && document.addEventListener) {
+      document.addEventListener('DOMContentLoaded', function(){
+        injectNumChooser();
+        wrapGenerateFromSelections();
+      });
+    }
+  })();
+
+  // Preload data so it's ready when renderTables(...) is called
   if (document && document.addEventListener) {
     document.addEventListener('DOMContentLoaded', () => {
       loadAll().catch(() => {});
