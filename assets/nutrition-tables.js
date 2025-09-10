@@ -660,3 +660,142 @@
     spin();
   }
 })();
+/* ===== AutoChooser — deterministic, exclusion-aware category picker =====
+   What this adds:
+   - window.AutoChooser.chooseForCategories(seedText, categoryModes, exclusions)
+   - Deterministically picks ONE ingredient for each category whose mode is "GPT"
+   - Looks up candidates from master.csv (preferred) or categories.csv (fallback)
+   - Excludes anything listed in exclusions (case-insensitive match on ingredient_name)
+   - Returns { chosen: Map<category, ingredient>, diagnostics: {...} }
+
+   How to use (later, in your own submit/collect code):
+     const result = await window.AutoChooser.chooseForCategories(
+       seedText,                                  // e.g., 'session-1' or your recipe prompt
+       { Vegetables: "GPT", Fruit: "GPT" },       // categories where app should choose
+       ["Dairy", "Red Meat"]                      // ingredient-level exclusions (optional)
+     );
+     // Merge result.chosen into your final ingredient list before building the prompt.
+*/
+
+(function () {
+  // ---- tiny CSV loader (no external libs) ----
+  async function loadCSV(path) {
+    const res = await fetch(path, { cache: "no-store" });
+    if (!res.ok) throw new Error(`Failed to load ${path}: ${res.status}`);
+    const text = await res.text();
+    const lines = text.split(/\r?\n/).filter(Boolean);
+    if (lines.length === 0) return [];
+    const headers = lines[0].split(",").map(h => h.trim());
+    return lines.slice(1).map(row => {
+      const cells = row.split(","); // simple CSV; if your CSV has quoted commas, use a proper parser later
+      const obj = {};
+      headers.forEach((h, i) => obj[h] = (cells[i] ?? "").trim());
+      return obj;
+    });
+  }
+
+  // ---- mojibake cleaner (safe; no HTML changes) ----
+  function cleanDisplay(s) {
+    if (!s) return s;
+    return s
+      .replace(/\uFFFD/g, "")             // remove replacement char �
+      .replace(/Ã¢ÂÂ/g, "’")
+      .replace(/Ã‚Â/g, "")                 // stray "Â"
+      .replace(/�+/g, "")                  // any remaining sequences of �
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  // ---- deterministic PRNG (mulberry32) ----
+  function mulberry32(seed) {
+    return function () {
+      let t = seed += 0x6D2B79F5;
+      t = Math.imul(t ^ t >>> 15, t | 1);
+      t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+  function hashSeed(text) {
+    // simple 32-bit hash for deterministic seeding
+    let h = 2166136261;
+    for (let i = 0; i < text.length; i++) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+  }
+
+  // ---- pick one item deterministically from an array ----
+  function pickOneDeterministic(arr, seedText) {
+    if (!arr.length) return null;
+    const rng = mulberry32(hashSeed(seedText));
+    const idx = Math.floor(rng() * arr.length);
+    return arr[idx];
+  }
+
+  // ---- core: choose 1 ingredient per "GPT" category ----
+  async function chooseForCategories(seedText, categoryModes, exclusions = []) {
+    // Load data: prefer master.csv; fallback to categories.csv if needed
+    let master = [];
+    try {
+      master = await loadCSV("/data/master.csv");
+    } catch (e) {
+      // ignore; try categories.csv
+    }
+    let categories = [];
+    try {
+      categories = await loadCSV("/data/categories.csv");
+    } catch (e) {
+      // ignore
+    }
+
+    if (!master.length && !categories.length) {
+      throw new Error("No data found. Ensure /data/master.csv or /data/categories.csv exist.");
+    }
+
+    // Flexible column detection
+    // Expected in master: ingredient_name, category  (case-insensitive)
+    // Expected in categories: ingredient_name, category  (or 'name' + 'category')
+    const norm = s => (s || "").toLowerCase().trim();
+    const exSet = new Set(exclusions.map(norm));
+
+    function extractRows(rows) {
+      if (!rows.length) return [];
+      // find column names
+      const keys = Object.keys(rows[0]).map(k => k.trim());
+      const colName = keys.find(k => norm(k) === "ingredient_name") || keys.find(k => norm(k) === "name") || keys[0];
+      const colCat  = keys.find(k => norm(k) === "category") || keys[1] || keys[0];
+      return rows.map(r => ({
+        ingredient: cleanDisplay(r[colName] || ""),
+        category: cleanDisplay(r[colCat]   || "")
+      })).filter(r => r.ingredient && r.category);
+    }
+
+    const baseRows = extractRows(master.length ? master : categories);
+
+    const chosen = new Map();
+    const skipped = [];
+    const details = [];
+
+    for (const [category, mode] of Object.entries(categoryModes || {})) {
+      if (String(mode).toUpperCase() !== "GPT") continue;
+
+      const candidates = baseRows.filter(r => norm(r.category) === norm(category))
+        .filter(r => !exSet.has(norm(r.ingredient)));
+
+      const pick = pickOneDeterministic(candidates, `${seedText}::${category}`);
+      if (pick) {
+        chosen.set(category, pick.ingredient);
+        details.push({ category, picked: pick.ingredient, poolSize: candidates.length });
+      } else {
+        skipped.push({ category, reason: "No eligible candidates (after exclusions or missing category)" });
+      }
+    }
+
+    return { chosen, diagnostics: { skipped, details, totalRows: baseRows.length } };
+  }
+
+  // expose to your app
+  window.AutoChooser = { chooseForCategories };
+})();
+
