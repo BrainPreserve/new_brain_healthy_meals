@@ -73,34 +73,62 @@
     return s;
   }
 
-  function cleanDisplay(val) {
-    let s = String(val ?? '');
+  // REPLACE your existing cleanDisplay with this version
+function cleanDisplay(val) {
+  let s = String(val ?? '');
 
-    // First pass: quick whitespace normalization
-    s = s.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\u00A0/g, ' ');
+  // Normalize basic whitespace
+  s = s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  s = s.replace(/\u00A0/g, ' '); // NBSP → space
 
-    // Second pass: try robust recode if it looks garbled
-    s = maybeRecodeUTF8(s);
+  // Try a robust re-decode if the string looks garbled
+  s = (function maybeRecodeUTF8(x) {
+    const suspect = /[ÃÂâ€¢]|â|Ã¢Â|Ãƒ|ï¿½/.test(x);
+    if (!suspect) return x;
+    try {
+      const bytes = Uint8Array.from([...x].map(ch => ch.charCodeAt(0) & 0xFF));
+      const decoded = new TextDecoder('utf-8').decode(bytes);
+      const score = t => (t.match(/[ÃÂâ€¢]|â|Ã¢Â|Ãƒ|ï¿½/g) || []).length;
+      if (score(decoded) <= score(x)) x = decoded;
+    } catch (_) {}
+    if (x.charCodeAt(0) === 0xFEFF) x = x.slice(1); // strip BOM
+    return x;
+  })(s);
 
-    // Third pass: targeted replacements for stubborn cases
-    const map = {
-      // SINGLE QUOTES (’ ‘) — includes your exact issue "Ã¢ÂÂ"
-      'Ã¢ÂÂ': '’', 'Ã¢Â€Â™': '’', 'â€™': '’', 'â': '’',
-      'Ã¢ÂÂ˜': '‘', 'Ã¢Â€Â˜': '‘', 'â€˜': '‘', 'â˜': '‘',
-      // DOUBLE QUOTES (“ ”)
-      'Ã¢ÂÂœ': '“', 'Ã¢Â€Âœ': '“', 'â€œ': '“', 'â': '“',
-      'Ã¢ÂÂ�': '”', 'Ã¢Â€Â�': '”', 'â€': '”', 'â': '”',
-      // DASHES (– —)
-      'Ã¢ÂÂ“': '–', 'Ã¢Â€Â“': '–', 'â€“': '–', 'â': '–',
-      'Ã¢ÂÂ”': '—', 'Ã¢Â€Â”': '—', 'â€”': '—', 'â': '—',
-      // ELLIPSIS (…)
-      'Ã¢ÂÂ¦': '…', 'Ã¢Â€Â¦': '…', 'â€¦': '…', 'â¦': '…',
-      // strip stray "Â" / "Ã‚"
-      'Â': '', 'Ã‚': ''
-    };
-    for (const [bad, good] of Object.entries(map)) {
-      if (s.includes(bad)) s = s.split(bad).join(good);
-    }
+  // ---- Hard fixes for known mojibake sequences ----
+  const map = {
+    // SINGLE QUOTES (’ ‘) — includes your exact issue "Ã¢ÂÂ"
+    'Ã¢ÂÂ': '’', 'Ã¢Â€Â™': '’', 'â€™': '’', 'â': '’',
+    'Ã¢ÂÂ˜': '‘', 'Ã¢Â€Â˜': '‘', 'â€˜': '‘', 'â˜': '‘',
+    // DOUBLE QUOTES (“ ”)
+    'Ã¢ÂÂœ': '“', 'Ã¢Â€Âœ': '“', 'â€œ': '“', 'â': '“',
+    'Ã¢ÂÂ�': '”', 'Ã¢Â€Â�': '”', 'â€': '”', 'â': '”',
+    // DASHES (– —)
+    'Ã¢ÂÂ“': '–', 'Ã¢Â€Â“': '–', 'â€“': '–', 'â': '–',
+    'Ã¢ÂÂ”': '—', 'Ã¢Â€Â”': '—', 'â€”': '—', 'â': '—',
+    // ELLIPSIS (…)
+    'Ã¢ÂÂ¦': '…', 'Ã¢Â€Â¦': '…', 'â€¦': '…', 'â¦': '…',
+    // Stray “Â”/“Ã‚”
+    'Â': '', 'Ã‚': ''
+  };
+  for (const [bad, good] of Object.entries(map)) {
+    if (s.includes(bad)) s = s.split(bad).join(good);
+  }
+
+  // ---- Explicitly remove the Unicode replacement char (� = U+FFFD) ----
+  // Handle combos like "�–" or "–�" first, then drop any remaining � safely.
+  s = s.replace(/\uFFFD\s*–/g, '–');  // �– → –
+  s = s.replace(/–\s*\uFFFD/g, '–');  // –� → –
+  s = s.replace(/\uFFFD\s*-\s*/g, '-'); // �- → -
+  s = s.replace(/-\s*\uFFFD/g, '-');    // -� → -
+  s = s.replace(/\uFFFD+/g, '');        // remove any leftover �
+
+  // Collapse extra spaces created by replacements
+  s = s.replace(/[ \t]{2,}/g, ' ');
+
+  return s.trim();
+}
+
 
     // Collapse excessive spaces created by replacements
     s = s.replace(/[ \t]{2,}/g, ' ');
