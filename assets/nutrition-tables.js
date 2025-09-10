@@ -444,17 +444,6 @@
   }
 })();
 /* ========= BrainPreserve UI Enhancer (Standalone) v1.3 =========
-   Anchor strategy:
-   - We locate the same button your code already uses for selections:
-       a button whose onclick contains "generateFromSelections"
-   - We treat the button’s nearest <form> as the "ingredient selector"; if no form,
-     we use the nearest container (div/section/article/main) that holds multiple inputs.
-   Features:
-   - Collapsible wrapper for the selector (closed by default)
-   - Clear Form (Top) injected if none exists; always inject Clear Form (Bottom) under results
-   - Full reset: text/number/select/textarea/radios/checkboxes, recollapse groups,
-     reset Number-of-Recipes (#num-recipes-form and “num/recipe” lookalikes)
-   - Waits/retries for late-rendered UIs; exposes version flag "1.3"
   const log = (...a) => DEBUG && console.log('[BP-Enhancer v1.3]', ...a);
 
   // ---------- helpers ----------
