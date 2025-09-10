@@ -1,10 +1,8 @@
-/* BrainPreserve tables module — strict render-on-ingredients only
-   Behavior:
-   - Renders tables ONLY when called with >=1 ingredient.
-   - Filters to ONLY those ingredients (case-insensitive; alias-aware via master.csv).
-   - If called with no/empty/unknown ingredients → renders nothing (no full-table dump, no note).
-   - Cleans mojibake (Â, Ã‚, â€“/—/…/smart quotes, including "Ã¢ÂÂ").
-   - Drops blank CSV rows (commas-only) and hides always-empty/phantom columns.
+/* BrainPreserve tables module — mojibake fix edition
+   Focus: aggressively fix encoding artifacts (e.g., Ã¢ÂÂ) coming from CSV exports.
+   - Pre-fix CSV text before PapaParse reads it (beforeFirstChunk)
+   - Sanitize again on display (cleanDisplay)
+   - Leaves your rendering behavior otherwise unchanged
 
    Requirements in index.html:
      <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
@@ -50,17 +48,64 @@
       .trim();
   }
 
-  function csv(path) {
-    return new Promise((resolve, reject) => {
-      Papa.parse(path, {
-        download: true,
-        header: true,
-        dynamicTyping: false,
-        skipEmptyLines: true,
-        complete: res => resolve(res.data || []),
-        error: reject
-      });
-    });
+  // --- Robust mojibake fixer ---
+  // If text contains typical mojibake markers (Ã, Â, â, etc.), reinterpret
+  // its 0–255 char codes as bytes and decode as UTF-8. Then apply targeted replacements.
+  function maybeRecodeUTF8(s) {
+    const suspect = /[ÃÂâ€¢]|â|Ã¢Â|Ãƒ|ï¿½/.test(s); // includes replacement char pattern and common combos
+    if (!suspect) return s;
+
+    try {
+      // Re-interpret current string's code points as Latin-1 bytes, then decode as UTF-8
+      const bytes = Uint8Array.from([...s].map(ch => ch.charCodeAt(0) & 0xFF));
+      const decoded = new TextDecoder('utf-8').decode(bytes);
+
+      // Choose the version with fewer mojibake markers
+      const score = (t) => (t.match(/[ÃÂâ€¢]|â|Ã¢Â|Ãƒ|ï¿½/g) || []).length;
+      if (score(decoded) <= score(s)) s = decoded;
+    } catch (_) {
+      // ignore and keep original
+    }
+
+    // Also strip UTF-8 BOM if present
+    if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1);
+
+    return s;
+  }
+
+  function cleanDisplay(val) {
+    let s = String(val ?? '');
+
+    // First pass: quick whitespace normalization
+    s = s.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\u00A0/g, ' ');
+
+    // Second pass: try robust recode if it looks garbled
+    s = maybeRecodeUTF8(s);
+
+    // Third pass: targeted replacements for stubborn cases
+    const map = {
+      // SINGLE QUOTES (’ ‘) — includes your exact issue "Ã¢ÂÂ"
+      'Ã¢ÂÂ': '’', 'Ã¢Â€Â™': '’', 'â€™': '’', 'â': '’',
+      'Ã¢ÂÂ˜': '‘', 'Ã¢Â€Â˜': '‘', 'â€˜': '‘', 'â˜': '‘',
+      // DOUBLE QUOTES (“ ”)
+      'Ã¢ÂÂœ': '“', 'Ã¢Â€Âœ': '“', 'â€œ': '“', 'â': '“',
+      'Ã¢ÂÂ�': '”', 'Ã¢Â€Â�': '”', 'â€': '”', 'â': '”',
+      // DASHES (– —)
+      'Ã¢ÂÂ“': '–', 'Ã¢Â€Â“': '–', 'â€“': '–', 'â': '–',
+      'Ã¢ÂÂ”': '—', 'Ã¢Â€Â”': '—', 'â€”': '—', 'â': '—',
+      // ELLIPSIS (…)
+      'Ã¢ÂÂ¦': '…', 'Ã¢Â€Â¦': '…', 'â€¦': '…', 'â¦': '…',
+      // strip stray "Â" / "Ã‚"
+      'Â': '', 'Ã‚': ''
+    };
+    for (const [bad, good] of Object.entries(map)) {
+      if (s.includes(bad)) s = s.split(bad).join(good);
+    }
+
+    // Collapse excessive spaces created by replacements
+    s = s.replace(/[ \t]{2,}/g, ' ');
+
+    return s.trim();
   }
 
   // Remove lines that are effectively blank (e.g., ",,,,,,,")
@@ -70,52 +115,26 @@
     );
   }
 
-  // Clean mojibake & typography glitches for display
-  // REPLACE your existing cleanDisplay with this version
-function cleanDisplay(val) {
-  let s = String(val ?? '');
-
-  // Normalize line breaks and spaces
-  s = s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  s = s.replace(/\u00A0/g, ' '); // NBSP → space
-
-  // Quick removals of common stray chars that appear with mojibake
-  s = s.replace(/Â/g, '');   // stray Â
-  s = s.replace(/Ã‚/g, '');  // stray Ã‚
-
-  // Targeted mojibake fixes (UTF-8 seen as Latin-1 -> rendered as odd sequences)
-  // Covers your specific issue "Ã¢ÂÂ" plus related punctuation families.
-  const map = {
-    // SINGLE QUOTES (’ ‘)
-    'Ã¢ÂÂ': '’', 'Ã¢Â€Â™': '’', 'â€™': '’', 'â': '’',
-    'Ã¢ÂÂ˜': '‘', 'Ã¢Â€Â˜': '‘', 'â€˜': '‘', 'â˜': '‘',
-
-    // DOUBLE QUOTES (“ ”)
-    'Ã¢ÂÂœ': '“', 'Ã¢Â€Âœ': '“', 'â€œ': '“',
-    'Ã¢ÂÂ�': '”', 'Ã¢Â€Â�': '”', 'â€': '”', 'â': '”',
-
-    // DASHES (– —)
-    'Ã¢ÂÂ“': '–', 'Ã¢Â€Â“': '–', 'â€“': '–', 'â': '–',
-    'Ã¢ÂÂ”': '—', 'Ã¢Â€Â”': '—', 'â€”': '—', 'â': '—',
-
-    // ELLIPSIS (…)
-    'Ã¢ÂÂ¦': '…', 'Ã¢Â€Â¦': '…', 'â€¦': '…', 'â¦': '…',
-
-    // Directional / formatting marks sometimes leaking into CSVs
-    'Ã¢Â€Âª': '', 'Ã¢Â€Â«': '', 'Ã¢Â€Â¬': '',
-    'â€ª': '',   'â€«': '',   'â€¬': ''
-  };
-
-  for (const [bad, good] of Object.entries(map)) {
-    if (s.includes(bad)) s = s.split(bad).join(good);
+  // Hide phantom headers: _1, Unnamed: 1, Column3, or columns empty for every row
+  function isHeaderNameOk(name) {
+    if (!name) return false;
+    const t = String(name).trim();
+    if (!t) return false;
+    const l = t.toLowerCase();
+    if (l === '_' || /^_+\d*$/.test(l)) return false;        // _ or __ or _1
+    if (/^unnamed/i.test(t)) return false;                   // Unnamed: 1
+    if (/^column\d+$/i.test(t)) return false;                // Column1, Column2
+    return true;
   }
 
-  // Collapse repeated spaces that can result from replacements
-  s = s.replace(/[ \t]{2,}/g, ' ');
-
-  return s.trim();
-}
-
+  function chooseHeaders(rows) {
+    if (!rows || rows.length === 0) return [];
+    const all = new Set();
+    for (const r of rows) Object.keys(r).forEach(k => all.add(k));
+    let headers = Array.from(all).filter(isHeaderNameOk);
+    headers = headers.filter(h => rows.some(r => String(r[h] ?? '').trim() !== ''));
+    return headers;
+  }
 
   function pick(obj, candidateKeys) {
     const keys = Object.keys(obj);
@@ -133,32 +152,39 @@ function cleanDisplay(val) {
 
   function splitAliases(val) {
     if (val == null || val === '') return [];
-    return String(val)
-      .split(/[;,]/g)
-      .map(x => norm(x))
-      .filter(Boolean);
+    return String(val).split(/[;,]/g).map(x => norm(x)).filter(Boolean);
   }
 
-  function isHeaderNameOk(name) {
-    if (!name) return false;
-    const t = String(name).trim();
-    if (!t) return false;
-    const l = t.toLowerCase();
-    if (l === '_' || /^_+\d*$/.test(l)) return false;        // _ or __ or _1
-    if (/^unnamed/i.test(t)) return false;                   // Unnamed: 1
-    if (/^column\d+$/i.test(t)) return false;                // column1, column2
-    return true;
-  }
-
-  function chooseHeaders(rows) {
-    if (!rows || rows.length === 0) return [];
-    // Union of keys across all rows (some CSVs vary per row)
-    const all = new Set();
-    for (const r of rows) Object.keys(r).forEach(k => all.add(k));
-    // Drop bad/phantom headers and those empty for ALL rows
-    let headers = Array.from(all).filter(isHeaderNameOk);
-    headers = headers.filter(h => rows.some(r => String(r[h] ?? '').trim() !== ''));
-    return headers;
+  // --- CSV loader with pre-parse mojibake repair ---
+  function csv(path) {
+    return new Promise((resolve, reject) => {
+      Papa.parse(path, {
+        download: true,
+        header: true,
+        dynamicTyping: false,
+        skipEmptyLines: true,
+        beforeFirstChunk: function (chunk) {
+          // Strip BOM and try re-decode if garbled, then normalize line endings
+          let fixed = chunk;
+          if (fixed && fixed.charCodeAt(0) === 0xFEFF) fixed = fixed.slice(1);
+          fixed = maybeRecodeUTF8(fixed);
+          fixed = fixed.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+          return fixed;
+        },
+        complete: (res) => {
+          const rows = dropEmptyRows(res.data || []);
+          // Clean all string fields once up-front (light pass)
+          for (const row of rows) {
+            for (const k of Object.keys(row)) {
+              const v = row[k];
+              if (typeof v === 'string') row[k] = cleanDisplay(v);
+            }
+          }
+          resolve(rows);
+        },
+        error: reject
+      });
+    });
   }
 
   function buildMasterIndexes() {
@@ -217,14 +243,14 @@ function cleanDisplay(val) {
     if (DATA.loaded) return;
 
     // Load master first (aliases)
-    DATA.master = dropEmptyRows(await csv(CFG.paths.master));
+    DATA.master = await csv(CFG.paths.master);
     buildMasterIndexes();
 
     // Load the four tables
-    DATA.tables.nutrition = dropEmptyRows(await csv(CFG.paths.nutrition));
-    DATA.tables.cognitive = dropEmptyRows(await csv(CFG.paths.cognitive));
-    DATA.tables.diet      = dropEmptyRows(await csv(CFG.paths.diet));
-    DATA.tables.micro     = dropEmptyRows(await csv(CFG.paths.micro));
+    DATA.tables.nutrition = await csv(CFG.paths.nutrition);
+    DATA.tables.cognitive = await csv(CFG.paths.cognitive);
+    DATA.tables.diet      = await csv(CFG.paths.diet);
+    DATA.tables.micro     = await csv(CFG.paths.micro);
 
     DATA.loaded = true;
   }
@@ -286,7 +312,7 @@ function cleanDisplay(val) {
     const canonList = canonicalizeList(ingredientList);
     const ingredientSet = new Set(canonList);
 
-    // STRICT GATE: if no valid ingredients, render nothing
+    // If no valid ingredients, render nothing (no full-table dump)
     if (ingredientSet.size === 0) return;
 
     // Filter each table
