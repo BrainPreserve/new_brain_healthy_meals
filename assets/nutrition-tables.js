@@ -932,3 +932,56 @@
   st.textContent = css;
   document.head.appendChild(st);
 })();
+/* ===== BP Minimal Prune — keep only the first "Clear Form" inside the selector; hide the rest ===== */
+(function () {
+  function txt(el) {
+    return (el ? (el.textContent || el.value || '') : '').trim().toLowerCase();
+  }
+  function findSelectionsButton() {
+    // Look for the button wired to your ingredient selector submit
+    const btns = Array.from(document.querySelectorAll('button'));
+    return btns.find(b => (b.getAttribute('onclick') || '').toLowerCase().includes('generatefromselections')) || null;
+  }
+  function nearestSelectorContainer(anchor) {
+    if (!anchor) return null;
+    // Prefer the nearest <form>; otherwise walk up to a container with multiple inputs
+    const form = anchor.closest('form');
+    if (form) return form;
+    let n = anchor.parentElement;
+    while (n && n !== document.body) {
+      if (['DIV','SECTION','ARTICLE','MAIN'].includes(n.tagName)) {
+        const inputs = n.querySelectorAll('input,select,textarea').length;
+        if (inputs >= 4) return n;
+      }
+      n = n.parentElement;
+    }
+    return null;
+  }
+  function pruneClearButtons() {
+    const selBtn = findSelectionsButton();
+    const selectorRoot = nearestSelectorContainer(selBtn);
+    const all = Array.from(document.querySelectorAll('button, input[type="button"], a[role="button"]'));
+
+    let keptInsideSelector = 0;
+
+    all.forEach(el => {
+      const label = txt(el);
+      if (label === 'clear form') {
+        const insideSelector = selectorRoot ? selectorRoot.contains(el) : false;
+        if (insideSelector && keptInsideSelector === 0) {
+          // Keep the very first "Clear Form" that lives inside the selector
+          keptInsideSelector = 1;
+        } else {
+          // Hide any others (e.g., under custom input, extra bottom copies)
+          el.style.display = 'none';
+        }
+      }
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', pruneClearButtons);
+  } else {
+    pruneClearButtons();
+  }
+})();
