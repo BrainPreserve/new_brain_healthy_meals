@@ -985,3 +985,24 @@
     pruneClearButtons();
   }
 })();
+/* ===== BP UI prune: hide only the "Clear Custom" button (safe, append-only) ===== */
+(function () {
+  function hideClearCustom() {
+    // Look for typical clickable elements and hide ones whose visible label is exactly "Clear Custom"
+    const els = Array.from(document.querySelectorAll(
+      'button, input[type="button"], input[type="submit"], a[role="button"]'
+    ));
+    els.forEach(el => {
+      const label = (el.textContent || el.value || '').trim().toLowerCase();
+      if (label === 'clear custom') {
+        el.style.display = 'none';   // non-destructive; can be undone by removing this snippet
+      }
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', hideClearCustom);
+  } else {
+    hideClearCustom();
+  }
+})();
