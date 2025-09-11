@@ -50,7 +50,6 @@
 
   // --- Robust mojibake fixer ---
   function maybeRecodeUTF8(s) {
-    // If text looks garbled (Latin-1 mis-decoded UTF-8), reinterpret.
     const suspect = /[ÃÂâ€¢]|â|Ã¢Â|Ãƒ|ï¿½/.test(s);
     if (!suspect) return s;
     try {
@@ -59,54 +58,46 @@
       const score = t => (t.match(/[ÃÂâ€¢]|â|Ã¢Â|Ãƒ|ï¿½/g) || []).length;
       if (score(decoded) <= score(s)) s = decoded;
     } catch (_) {}
-    if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1); // strip BOM
+    if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1);
     return s;
   }
 
-  // Display sanitizer — includes stubborn sequences + U+FFFD (�) removal
+  // Display sanitizer — includes stubborn sequences + U+FFFD removal
   function cleanDisplay(val) {
     let s = String(val ?? '');
     s = s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-    s = s.replace(/\u00A0/g, ' ');      // NBSP → space
+    s = s.replace(/\u00A0/g, ' ');
     s = maybeRecodeUTF8(s);
 
     const replacements = [
-      // Single quotes (’ ‘) — includes exact "Ã¢ÂÂ"
       [/Ã¢ÂÂ|Ã¢Â€Â™|â€™|â/g, '’'],
       [/Ã¢ÂÂ˜|Ã¢Â€Â˜|â€˜|â˜/g, '‘'],
-      // Double quotes (“ ”)
       [/Ã¢ÂÂœ|Ã¢Â€Âœ|â€œ|â/g, '“'],
       [/Ã¢ÂÂ�|Ã¢Â€Â�|â€|â/g, '”'],
-      // Dashes
       [/Ã¢ÂÂ“|Ã¢Â€Â“|â€“|â/g, '–'],
       [/Ã¢ÂÂ”|Ã¢Â€Â”|â€”|â/g, '—'],
-      // Ellipsis
       [/Ã¢ÂÂ¦|Ã¢Â€Â¦|â€¦|â¦/g, '…'],
-      // Stray "Â"/"Ã‚"
       [/Ã‚|Â/g, '']
     ];
     for (const [pat, rep] of replacements) s = s.replace(pat, rep);
 
-    // Explicitly remove the Unicode replacement char (�) and common combos
-    s = s.replace(/\uFFFD\s*–/g, '–');  // �– → –
-    s = s.replace(/–\s*\uFFFD/g, '–');  // –� → –
-    s = s.replace(/\uFFFD\s*-\s*/g, '-'); // �- → -
-    s = s.replace(/-\s*\uFFFD/g, '-');    // -� → -
-    s = s.replace(/\uFFFD+/g, '');        // any remaining �
-
+    s = s.replace(/\uFFFD\s*–/g, '–');
+    s = s.replace(/–\s*\uFFFD/g, '–');
+    s = s.replace(/\uFFFD\s*-\s*/g, '-');
+    s = s.replace(/-\s*\uFFFD/g, '-');
+    s = s.replace(/\uFFFD+/g, '');
     s = s.replace(/[ \t]{2,}/g, ' ');
     return s.trim();
   }
 
-  // Hide phantom headers (_1, Unnamed: 1, Column3) and empty-for-all columns
   function isHeaderNameOk(name) {
     if (!name) return false;
     const t = String(name).trim();
     if (!t) return false;
     const l = t.toLowerCase();
-    if (l === '_' || /^_+\d*$/.test(l)) return false;        // _ or __ or _1
-    if (/^unnamed/i.test(t)) return false;                   // Unnamed: 1
-    if (/^column\d+$/i.test(t)) return false;                // Column1, Column2
+    if (l === '_' || /^_+\d*$/.test(l)) return false;
+    if (/^unnamed/i.test(t)) return false;
+    if (/^column\d+$/i.test(t)) return false;
     return true;
   }
 
@@ -119,7 +110,6 @@
     return headers;
   }
 
-  // Drop rows where every cell is blank
   function dropEmptyRows(rows) {
     return (rows || []).filter(row =>
       Object.values(row).some(v => String(v ?? '').trim() !== '')
@@ -162,7 +152,6 @@
         },
         complete: (res) => {
           const rows = dropEmptyRows(res.data || []);
-          // Light clean pass for all string fields
           for (const row of rows) {
             for (const k of Object.keys(row)) {
               const v = row[k];
@@ -210,11 +199,11 @@
       const c = lookupCanonical(name) || String(name || '').trim();
       if (c) out.push(c);
     });
-    return Array.from(new Set(out)); // unique
+    return Array.from(new Set(out));
   }
 
   function filterByIngredients(tableRows, ingredientSet) {
-    if (!ingredientSet || ingredientSet.size === 0) return tableRows.slice(); // fallback: ALL
+    if (!ingredientSet || ingredientSet.size === 0) return tableRows.slice();
     const out = [];
     for (const row of tableRows) {
       const keyVal = getKeyValue(row);
@@ -231,11 +220,9 @@
   async function loadAll() {
     if (DATA.loaded) return;
 
-    // Load master first (aliases)
     DATA.master = await csv(CFG.paths.master);
     buildMasterIndexes();
 
-    // Load the four tables
     DATA.tables.nutrition = await csv(CFG.paths.nutrition);
     DATA.tables.cognitive = await csv(CFG.paths.cognitive);
     DATA.tables.diet      = await csv(CFG.paths.diet);
@@ -294,14 +281,11 @@
     const mount = document.getElementById('bp-nutrition');
     if (!mount) return;
 
-    // Clear existing
     mount.innerHTML = '';
 
-    // Canonicalize supplied ingredients (from recipe or selections)
     const canonList = canonicalizeList(ingredientList);
     const ingredientSet = new Set(canonList);
 
-    // Filter each table (ALL if empty set and fallback enabled)
     const base = CFG.renderAllWhenNoIngredients && ingredientSet.size === 0;
     const t1 = base ? DATA.tables.nutrition.slice() : filterByIngredients(DATA.tables.nutrition, ingredientSet);
     const t2 = base ? DATA.tables.cognitive.slice() : filterByIngredients(DATA.tables.cognitive, ingredientSet);
@@ -327,7 +311,6 @@
   // =========================
   window.BP = window.BP || {};
 
-  // Main entry: call with an array of ingredient names (strings)
   window.BP.renderTables = async function (ingredientsArray) {
     try {
       await loadAll();
@@ -345,18 +328,15 @@
     }
   };
 
-  // Phrase-based detector (optional use by your page)
   window.BP.deriveIngredientsFromRecipe = function (text) {
     if (!text || typeof text !== 'string') return [];
     const hay = ' ' + norm(text) + ' ';
     const found = new Set();
 
-    // Try canonical names
     for (const canonName of DATA.masterIndex.values()) {
       const needle = ' ' + norm(canonName) + ' ';
       if (hay.indexOf(needle) !== -1) found.add(canonName);
     }
-    // Try aliases
     for (const [aliasNorm, canonName] of DATA.aliasToCanon.entries()) {
       const needle = ' ' + aliasNorm + ' ';
       if (hay.indexOf(needle) !== -1) found.add(canonName);
@@ -374,7 +354,7 @@
           .find(b => (b.getAttribute('onclick')||'').includes('generateFromSelections'));
         if (!btn) return;
         const btnRow = btn.closest('.btn-row') || btn.parentElement;
-        if (!btnRow || document.getElementById('num-recipes-form')) return; // avoid duplicates
+        if (!btnRow || document.getElementById('num-recipes-form')) return;
 
         const wrap = document.createElement('div');
         wrap.className = 'row';
@@ -435,7 +415,7 @@
     }
   })();
 
-  // Preload data so it's ready when renderTables(...) is called
+  // Preload
   if (document && document.addEventListener) {
     document.addEventListener('DOMContentLoaded', () => {
       loadAll().catch(() => {});
@@ -443,242 +423,8 @@
   }
 })();
 
-/* ========= BrainPreserve UI Enhancer (Standalone) v1.3 =========
-   Anchor strategy:
-   - Locate the button whose onclick contains "generateFromSelections"
-   - Treat the nearest <form> as the selector; if none, use nearest container with multiple inputs
-   Features:
-   - Collapsible wrapper (closed by default)
-   - Clear Form (Top) wired or injected; Clear Form (Bottom) always injected under results
-   - Full reset (inputs/radios/checkboxes), recollapse groups, reset Number-of-Recipes to 5
-   - Retries for late rendering; exposes window._bpEnhancerVersion = "1.3"
-*/
-(() => {
-  const DEBUG = true;
-  const log = (...a) => DEBUG && console.log('[BP-Enhancer v1.3]', ...a);
-
-  // ---------- helpers ----------
-  const $ = (s, r = document) => r.querySelector(s);
-  const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
-  const first = (sels, r = document) => sels.map(sel => $(sel, r)).find(Boolean) || null;
-
-  function findSelectionsButton() {
-    // Same heuristic used by the number-chooser above
-    const buttons = $$('button');
-    return buttons.find(b => (b.getAttribute('onclick') || '').includes('generateFromSelections')) || null;
-  }
-
-  function nearestContainer(el) {
-    if (!el) return null;
-    const form = el.closest('form');
-    if (form) return form;
-    let node = el;
-    while (node && node !== document.body) {
-      if (['DIV','SECTION','ARTICLE','MAIN'].includes(node.tagName)) {
-        const inputs = node.querySelectorAll('input,select,textarea').length;
-        if (inputs >= 4) return node; // looks like the selector pane
-      }
-      node = node.parentElement;
-    }
-    return null;
-  }
-
-  function findOutputRoot() {
-    return (
-      $('#output') ||
-      $('#results') ||
-      $('#tables-container') ||
-      $('.recipes-output') ||
-      $('.results') ||
-      $('main') ||
-      document.body
-    );
-  }
-
-  function groupCandidates(root) {
-    const raw = [
-      ...$$('details.category', root),
-      ...$$('.category-group', root),
-      ...$$('.ingredient-category', root),
-      ...$$('[data-category]', root),
-      ...$$('fieldset', root),
-      ...$$('section', root),
-      ...$$('div', root)
-    ];
-    const uniq = Array.from(new Set(raw)).filter(el =>
-      el.querySelector && el.querySelector('input[type="checkbox"]')
-    );
-    return uniq;
-  }
-
-  // ---------- reset actions ----------
-  function collapse(el) {
-    if (!el) return;
-    if (el.tagName && el.tagName.toLowerCase() === 'details') { el.open = false; return; }
-    el.style.display = 'none';
-  }
-  function recollapseAll(root) {
-    groupCandidates(root).forEach(g => {
-      $$('input[type="checkbox"]', g).forEach(cb => cb.checked = false);
-      collapse(g);
-    });
-  }
-  function resetRadios(root) { $$('input[type="radio"]', root).forEach(r => r.checked = false); }
-  function resetTextish(root) {
-    $$('input[type="text"], input[type="search"], input[type="email"], input[type="number"], textarea', root)
-      .forEach(i => i.value = '');
-    $$('select', root).forEach(sel => { if (sel.multiple) Array.from(sel.options).forEach(o => o.selected=false); else sel.selectedIndex = 0; });
-  }
-  function resetNumRecipes() {
-    const candidates = [
-      '#num-recipes-form', '#num-recipes', '[name="numRecipes"]', '[data-bp="num-recipes"]'
-    ];
-    let el = first(candidates) ||
-             $$('input[type="number"], select').find(e =>
-               /recipe|num/i.test(e.name || '') || /recipe|num/i.test(e.id || '')
-             );
-    if (!el) return;
-    if (el.tagName && el.tagName.toLowerCase() === 'select') {
-      const idx = Array.from(el.options).findIndex(o => (o.value || o.textContent).trim() === '5');
-      el.selectedIndex = idx >= 0 ? idx : 0;
-    } else {
-      el.value = '5';
-    }
-  }
-  function fullClear(root) {
-    resetTextish(root);
-    resetRadios(root);
-    recollapseAll(root);
-    resetNumRecipes();
-  }
-
-  // ---------- UI injection ----------
-  function ensureStyles() {
-    if ($('#bp-enhancer-style')) return;
-    const st = document.createElement('style');
-    st.id = 'bp-enhancer-style';
-    st.textContent = `
-      .bp-collapser > summary {
-        list-style: none; cursor: pointer; user-select: none;
-        padding: 10px 14px; margin: 0 0 10px 0;
-        border: 1px solid #ddd; border-radius: 10px; background: #fafafa; font-weight: 600;
-      }
-      .bp-collapser[open] > summary { background: #f0f0f0; }
-      .bp-btn-clear {
-        border: 1px solid #ccc; border-radius: 10px; padding: 8px 12px;
-        font-size: 14px; cursor: pointer; background: #f7f7f7;
-      }
-      .bp-btn-clear:hover { background: #efefef; }
-      .bp-top-clear-wrap { margin: 10px 0 16px 0; text-align: right; }
-    `;
-    document.head.appendChild(st);
-  }
-
-  function ensureCollapsible(root) {
-    if (root.closest('.bp-collapser')) return;
-    const details = document.createElement('details');
-    details.className = 'bp-collapser';
-    details.open = false;
-    const summary = document.createElement('summary');
-    summary.textContent = 'Ingredient Selector (click to open)';
-    const host = document.createElement('div');
-    host.className = 'bp-collapser-host';
-    details.appendChild(summary);
-    details.appendChild(host);
-    root.parentNode.insertBefore(details, root);
-    host.appendChild(root);
-  }
-
-  function ensureTopClear(root) {
-    // If a Clear button already exists near the selector, wire it; otherwise inject our own.
-    let btn = root.querySelector('#clear-form, [data-action="clear-form"], button.clear-form');
-    if (!btn) {
-      const wrap = document.createElement('div');
-      wrap.className = 'bp-top-clear-wrap';
-      btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'bp-btn-clear';
-      btn.textContent = 'Clear Form';
-      wrap.appendChild(btn);
-      const details = root.closest('.bp-collapser') || root;
-      details.parentNode.insertBefore(wrap, details.nextSibling);
-    }
-    if (!btn.dataset.bpBound) {
-      btn.dataset.bpBound = '1';
-      btn.addEventListener('click', () => fullClear(root));
-    }
-  }
-
-  function ensureBottomClear(root) {
-    const out = findOutputRoot();
-    if (!out || $('.bp-bottom-clear', out)) return;
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'bp-bottom-clear bp-btn-clear';
-    btn.textContent = 'Clear Form (Bottom)';
-    Object.assign(btn.style, { display: 'block', margin: '24px auto' });
-    btn.addEventListener('click', () => {
-      fullClear(root);
-      root.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-    out.appendChild(btn);
-  }
-
-  // ---------- Boot (anchor to generateFromSelections button) ----------
-  function initOnce() {
-    const selBtn = findSelectionsButton();
-    if (!selBtn) { log('Selections button not found yet'); return false; }
-    const root = nearestContainer(selBtn);
-    if (!root) { log('Could not determine selector container near the button'); return false; }
-
-    ensureStyles();
-    ensureCollapsible(root);
-    ensureTopClear(root);
-    ensureBottomClear(root);
-
-    // Persist bottom clear across re-renders
-    const mo = new MutationObserver(() => ensureBottomClear(root));
-    mo.observe(document.body, { childList: true, subtree: true });
-
-    window._bpEnhancerVersion = '1.3';
-    log('Initialized on container:', root);
-    return true;
-  }
-
-  // Retry for late-rendered UIs
-  let attempts = 0;
-  function spin() {
-    if (initOnce()) return;
-    attempts++;
-    if (attempts < 50) setTimeout(spin, 200);
-    else log('Stopped retrying (no selections button / container found).');
-  }
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', spin);
-  } else {
-    spin();
-  }
-})();
-/* ===== AutoChooser — deterministic, exclusion-aware category picker =====
-   What this adds:
-   - window.AutoChooser.chooseForCategories(seedText, categoryModes, exclusions)
-   - Deterministically picks ONE ingredient for each category whose mode is "GPT"
-   - Looks up candidates from master.csv (preferred) or categories.csv (fallback)
-   - Excludes anything listed in exclusions (case-insensitive match on ingredient_name)
-   - Returns { chosen: Map<category, ingredient>, diagnostics: {...} }
-
-   How to use (later, in your own submit/collect code):
-     const result = await window.AutoChooser.chooseForCategories(
-       seedText,                                  // e.g., 'session-1' or your recipe prompt
-       { Vegetables: "GPT", Fruit: "GPT" },       // categories where app should choose
-       ["Dairy", "Red Meat"]                      // ingredient-level exclusions (optional)
-     );
-     // Merge result.chosen into your final ingredient list before building the prompt.
-*/
-
+/* ===== AutoChooser — deterministic, exclusion-aware category picker ===== */
 (function () {
-  // ---- tiny CSV loader (no external libs) ----
   async function loadCSV(path) {
     const res = await fetch(path, { cache: "no-store" });
     if (!res.ok) throw new Error(`Failed to load ${path}: ${res.status}`);
@@ -687,26 +433,16 @@
     if (lines.length === 0) return [];
     const headers = lines[0].split(",").map(h => h.trim());
     return lines.slice(1).map(row => {
-      const cells = row.split(","); // simple CSV; if your CSV has quoted commas, use a proper parser later
+      const cells = row.split(",");
       const obj = {};
       headers.forEach((h, i) => obj[h] = (cells[i] ?? "").trim());
       return obj;
     });
   }
-
-  // ---- mojibake cleaner (safe; no HTML changes) ----
   function cleanDisplay(s) {
     if (!s) return s;
-    return s
-      .replace(/\uFFFD/g, "")             // remove replacement char �
-      .replace(/Ã¢ÂÂ/g, "’")
-      .replace(/Ã‚Â/g, "")                 // stray "Â"
-      .replace(/�+/g, "")                  // any remaining sequences of �
-      .replace(/\s+/g, " ")
-      .trim();
+    return s.replace(/\uFFFD/g, "").replace(/Ã¢ÂÂ/g, "’").replace(/Ã‚Â/g, "").replace(/�+/g, "").replace(/\s+/g, " ").trim();
   }
-
-  // ---- deterministic PRNG (mulberry32) ----
   function mulberry32(seed) {
     return function () {
       let t = seed += 0x6D2B79F5;
@@ -716,293 +452,212 @@
     };
   }
   function hashSeed(text) {
-    // simple 32-bit hash for deterministic seeding
     let h = 2166136261;
-    for (let i = 0; i < text.length; i++) {
-      h ^= text.charCodeAt(i);
-      h = Math.imul(h, 16777619);
-    }
+    for (let i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 16777619); }
     return h >>> 0;
   }
-
-  // ---- pick one item deterministically from an array ----
   function pickOneDeterministic(arr, seedText) {
     if (!arr.length) return null;
     const rng = mulberry32(hashSeed(seedText));
     const idx = Math.floor(rng() * arr.length);
     return arr[idx];
   }
-
-  // ---- core: choose 1 ingredient per "GPT" category ----
   async function chooseForCategories(seedText, categoryModes, exclusions = []) {
-    // Load data: prefer master.csv; fallback to categories.csv if needed
     let master = [];
-    try {
-      master = await loadCSV("/data/master.csv");
-    } catch (e) {
-      // ignore; try categories.csv
-    }
+    try { master = await loadCSV("/data/master.csv"); } catch (_) {}
     let categories = [];
-    try {
-      categories = await loadCSV("/data/categories.csv");
-    } catch (e) {
-      // ignore
-    }
+    try { categories = await loadCSV("/data/categories.csv"); } catch (_) {}
+    if (!master.length && !categories.length) throw new Error("No data found. Ensure /data/master.csv or /data/categories.csv exist.");
 
-    if (!master.length && !categories.length) {
-      throw new Error("No data found. Ensure /data/master.csv or /data/categories.csv exist.");
-    }
-
-    // Flexible column detection
-    // Expected in master: ingredient_name, category  (case-insensitive)
-    // Expected in categories: ingredient_name, category  (or 'name' + 'category')
     const norm = s => (s || "").toLowerCase().trim();
     const exSet = new Set(exclusions.map(norm));
-
     function extractRows(rows) {
       if (!rows.length) return [];
-      // find column names
       const keys = Object.keys(rows[0]).map(k => k.trim());
       const colName = keys.find(k => norm(k) === "ingredient_name") || keys.find(k => norm(k) === "name") || keys[0];
-      const colCat  = keys.find(k => norm(k) === "category") || keys[1] || keys[0];
-      return rows.map(r => ({
-        ingredient: cleanDisplay(r[colName] || ""),
-        category: cleanDisplay(r[colCat]   || "")
-      })).filter(r => r.ingredient && r.category);
+      const colCat  = keys.find(k => norm(k) === "category")        || keys[1] || keys[0];
+      return rows.map(r => ({ ingredient: cleanDisplay(r[colName] || ""), category: cleanDisplay(r[colCat] || "") }))
+                 .filter(r => r.ingredient && r.category);
     }
-
     const baseRows = extractRows(master.length ? master : categories);
-
-    const chosen = new Map();
-    const skipped = [];
-    const details = [];
-
+    const chosen = new Map(), skipped = [], details = [];
     for (const [category, mode] of Object.entries(categoryModes || {})) {
       if (String(mode).toUpperCase() !== "GPT") continue;
-
-      const candidates = baseRows.filter(r => norm(r.category) === norm(category))
-        .filter(r => !exSet.has(norm(r.ingredient)));
-
+      const candidates = baseRows.filter(r => norm(r.category) === norm(category)).filter(r => !exSet.has(norm(r.ingredient)));
       const pick = pickOneDeterministic(candidates, `${seedText}::${category}`);
-      if (pick) {
-        chosen.set(category, pick.ingredient);
-        details.push({ category, picked: pick.ingredient, poolSize: candidates.length });
-      } else {
-        skipped.push({ category, reason: "No eligible candidates (after exclusions or missing category)" });
-      }
+      if (pick) { chosen.set(category, pick.ingredient); details.push({ category, picked: pick.ingredient, poolSize: candidates.length }); }
+      else { skipped.push({ category, reason: "No eligible candidates (after exclusions or missing category)" }); }
     }
-
     return { chosen, diagnostics: { skipped, details, totalRows: baseRows.length } };
   }
-
-  // expose to your app
   window.AutoChooser = { chooseForCategories };
 })();
-/* ===== FIX: Always place tables AFTER the ingredients/recipe/summary =====
-   What this does:
-   - Wraps BP.renderTables() without changing its behavior.
-   - Before and after each render, it moves #bp-nutrition to sit immediately
-     AFTER the most relevant "summary/recipe" container.
-   - Retries briefly to catch late-rendered summaries (e.g., after OpenAI returns).
-   - If no plausible summary container is found, it does nothing.
 
-   How to remove (if ever needed):
-   - Delete this entire block only (from this comment to the closing IIFE).
-*/
+/* ===== Keep tables AFTER recipe/summary (idempotent) ===== */
 (function () {
-  // Choose the most likely “summary/recipe” container already on your page
-  const SUMMARY_SELECTORS = [
-    // Most specific → least specific; last visible match wins
-    '.recipe-summary',
-    '#recipe-summary',
-    '.ingredients-summary',
-    '.generated-recipe',
-    '.generated-summary',
-    '.recipes-output',
-    '#recipes-output',
-    '#output',
-    '#results',
-    '.results',
-    'main'
-  ];
-
-  function isVisible(el) {
-    if (!el) return false;
-    const style = window.getComputedStyle(el);
-    if (style.display === 'none' || style.visibility === 'hidden') return false;
-    // Treat elements with layout size or fixed position as visible
-    return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+  const SUMMARY_SELECTORS = ['.recipe-summary','#recipe-summary','.ingredients-summary','.generated-recipe','.generated-summary','.recipes-output','#recipes-output','#output','#results','.results','main'];
+  function isVisible(el){ if(!el) return false; const s = getComputedStyle(el); if (s.display==='none'||s.visibility==='hidden') return false; return !!(el.offsetWidth||el.offsetHeight||el.getClientRects().length); }
+  function findSummaryAnchor(){
+    const nodes=[]; SUMMARY_SELECTORS.forEach(sel=>document.querySelectorAll(sel).forEach(n=>{ if(isVisible(n)) nodes.push(n); }));
+    return nodes.length?nodes[nodes.length-1]:null;
   }
-
-  function findSummaryAnchor() {
-    const nodes = [];
-    SUMMARY_SELECTORS.forEach(sel => {
-      document.querySelectorAll(sel).forEach(n => { if (isVisible(n)) nodes.push(n); });
-    });
-    // Prefer the last visible candidate (most “recent” output area on the page)
-    return nodes.length ? nodes[nodes.length - 1] : null;
+  function ensureAfter(){
+    const mount=document.getElementById('bp-nutrition'); if(!mount) return;
+    const anchor=findSummaryAnchor(); if(!anchor||!anchor.parentNode) return;
+    if (anchor.nextSibling!==mount) anchor.parentNode.insertBefore(mount, anchor.nextSibling);
   }
-
-  function ensureTablesAfterSummary() {
-    const mount = document.getElementById('bp-nutrition');
-    if (!mount) return;
-
-    const anchor = findSummaryAnchor();
-    if (!anchor || !anchor.parentNode) return;
-
-    // If #bp-nutrition is already immediately after the anchor, do nothing
-    if (anchor.nextSibling === mount) return;
-
-    // Move #bp-nutrition so it sits directly AFTER the summary anchor
-    anchor.parentNode.insertBefore(mount, anchor.nextSibling);
-  }
-
-  // Wrap BP.renderTables (non-destructive)
-  function wrapRenderTables() {
-    if (!window.BP || typeof window.BP.renderTables !== 'function' || window._bpAfterSummaryPatched) return;
-
-    const original = window.BP.renderTables;
-    window.BP.renderTables = async function (...args) {
-      // Try to place mount after any existing summary before rendering
-      ensureTablesAfterSummary();
-      const out = await original.apply(this, args);
-      // Do it again immediately after render
-      ensureTablesAfterSummary();
-      // Retry briefly to catch late-rendered summaries (e.g., async recipe text)
-      let tries = 0;
-      const timer = setInterval(() => {
-        ensureTablesAfterSummary();
-        if (++tries >= 12) clearInterval(timer); // ~12*200ms = ~2.4s
-      }, 200);
-      return out;
-    };
+  function wrap(){
+    if (!window.BP || typeof window.BP.renderTables!=='function' || window._bpAfterSummaryPatched) return;
+    const original=window.BP.renderTables;
+    window.BP.renderTables=async function(...args){ ensureAfter(); const out=await original.apply(this,args); ensureAfter(); let tries=0; const t=setInterval(()=>{ ensureAfter(); if(++tries>=12) clearInterval(t); },200); return out; };
     window._bpAfterSummaryPatched = true;
   }
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', wrapRenderTables);
-  } else {
-    wrapRenderTables();
-  }
+  if (document.readyState==='loading') document.addEventListener('DOMContentLoaded', wrap); else wrap();
 })();
-/* ===== BP Phase A (CSS-only via injection): hide empty post-Generate box + stray Clear buttons ===== */
+
+/* ===== Collapsible wrapper keeper (no buttons injected) ===== */
 (function () {
-  if (document.getElementById('bp-phase-a-style')) return; // prevent duplicate adds
-
-  const css = `
-    /* 1) Hide the blank box directly under the Generate Recipes button row, but ONLY if it's truly empty. */
-    .btn-row + :empty { display: none !important; }
-    .btn-row + .preview:empty,
-    .btn-row + #preview:empty,
-    .btn-row + .bp-preview-block:empty,
-    .btn-row + .bp-placeholder:empty { display: none !important; }
-
-    /* 2) Hide the Clear Form button that sits right below the custom-input box (common safe targets). */
-    /* If your custom input area uses a textarea, hide a typical Clear control right after it. */
-    textarea + button.clear-form,
-    textarea + .bp-clear-wrap,
-    textarea + .bp-btn-clear { display: none !important; }
-
-    /* Also hide Clear buttons that advertise themselves via common attributes. */
-    button[aria-label="Clear Form"],
-    button[title="Clear Form"],
-    input[type="button"][value="Clear Form"],
-    input[type="submit"][value="Clear Form"] { display: none !important; }
-
-    /* 3) Hide duplicate bottom Clear buttons that appear AFTER the tables mount (#bp-nutrition). */
-    #bp-nutrition ~ #bp-clear-bottom-wrap,
-    #bp-nutrition ~ .bp-clear-bottom-wrap,
-    #bp-nutrition ~ .bp-bottom-clear { display: none !important; }
-
-    /* (Harmless if absent) Hide older helper wrappers from previous experiments. */
-    #bp-clear-top-wrap,
-    #bp-clear-bottom-wrap { display: none !important; }
-
-    /* Ensure remaining buttons are fully visible (undo any accidental low-opacity styles). */
-    button,
-    input[type="button"],
-    input[type="submit"] {
-      opacity: 1 !important;
-      filter: none !important;
-    }
-  `;
-
-  const st = document.createElement('style');
-  st.id = 'bp-phase-a-style';
-  st.textContent = css;
-  document.head.appendChild(st);
-})();
-/* ===== BP Minimal Prune — keep only the first "Clear Form" inside the selector; hide the rest ===== */
-(function () {
-  function txt(el) {
-    return (el ? (el.textContent || el.value || '') : '').trim().toLowerCase();
-  }
-  function findSelectionsButton() {
-    // Look for the button wired to your ingredient selector submit
-    const btns = Array.from(document.querySelectorAll('button'));
-    return btns.find(b => (b.getAttribute('onclick') || '').toLowerCase().includes('generatefromselections')) || null;
-  }
-  function nearestSelectorContainer(anchor) {
-    if (!anchor) return null;
-    // Prefer the nearest <form>; otherwise walk up to a container with multiple inputs
-    const form = anchor.closest('form');
-    if (form) return form;
+  function findSelBtn(){ return Array.from(document.querySelectorAll('button')).find(b => (b.getAttribute('onclick')||'').includes('generateFromSelections')) || null; }
+  function selectorRoot(anchor){
+    if(!anchor) return null;
+    const form = anchor.closest('form'); if (form) return form;
     let n = anchor.parentElement;
-    while (n && n !== document.body) {
-      if (['DIV','SECTION','ARTICLE','MAIN'].includes(n.tagName)) {
-        const inputs = n.querySelectorAll('input,select,textarea').length;
-        if (inputs >= 4) return n;
-      }
-      n = n.parentElement;
-    }
+    while(n && n!==document.body){ if(['DIV','SECTION','ARTICLE','MAIN'].includes(n.tagName) && n.querySelectorAll('input,select,textarea').length>=4) return n; n=n.parentElement; }
     return null;
   }
-  function pruneClearButtons() {
-    const selBtn = findSelectionsButton();
-    const selectorRoot = nearestSelectorContainer(selBtn);
-    const all = Array.from(document.querySelectorAll('button, input[type="button"], a[role="button"]'));
-
-    let keptInsideSelector = 0;
-
-    all.forEach(el => {
-      const label = txt(el);
-      if (label === 'clear form') {
-        const insideSelector = selectorRoot ? selectorRoot.contains(el) : false;
-        if (insideSelector && keptInsideSelector === 0) {
-          // Keep the very first "Clear Form" that lives inside the selector
-          keptInsideSelector = 1;
-        } else {
-          // Hide any others (e.g., under custom input, extra bottom copies)
-          el.style.display = 'none';
-        }
-      }
-    });
+  function ensureWrapper(){
+    const btn = findSelBtn(); const root = selectorRoot(btn); if(!root) return;
+    if (root.closest('details.bp-collapser')) return;
+    const details = document.createElement('details'); details.className='bp-collapser'; details.open=false;
+    const summary = document.createElement('summary'); summary.textContent='Ingredient Selector (click to open)';
+    const host = document.createElement('div'); host.className='bp-collapser-host';
+    details.appendChild(summary); details.appendChild(host);
+    root.parentNode.insertBefore(details, root); host.appendChild(root);
   }
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', pruneClearButtons);
-  } else {
-    pruneClearButtons();
-  }
+  if (document.readyState==='loading') document.addEventListener('DOMContentLoaded', ensureWrapper); else ensureWrapper();
 })();
-/* ===== BP UI prune: hide only the "Clear Custom" button (safe, append-only) ===== */
+
+/* ===== Hide the "Clear Custom" button (idempotent) ===== */
 (function () {
-  function hideClearCustom() {
-    // Look for typical clickable elements and hide ones whose visible label is exactly "Clear Custom"
-    const els = Array.from(document.querySelectorAll(
-      'button, input[type="button"], input[type="submit"], a[role="button"]'
-    ));
-    els.forEach(el => {
-      const label = (el.textContent || el.value || '').trim().toLowerCase();
-      if (label === 'clear custom') {
-        el.style.display = 'none';   // non-destructive; can be undone by removing this snippet
+  function hide(){
+    const els = Array.from(document.querySelectorAll('button, input[type="button"], input[type="submit"], a[role="button"]'));
+    els.forEach(el => { const label=(el.textContent||el.value||'').trim().toLowerCase(); if (label==='clear custom') el.style.display='none'; });
+  }
+  if (document.readyState==='loading') document.addEventListener('DOMContentLoaded', hide); else hide();
+})();
+
+/* ===== BP Clear Controls v2 — two buttons, correct clearing, no overrides ===== */
+(function () {
+  const $  = (s,r=document)=>r.querySelector(s);
+  const $$ = (s,r=document)=>Array.from(r.querySelectorAll(s));
+  const text = el => (el ? (el.textContent||el.value||'').trim() : '');
+
+  function findSelBtn(){ return $$('button').find(b => (b.getAttribute('onclick')||'').toLowerCase().includes('generatefromselections')) || null; }
+  function selectorRoot(anchor){
+    if(!anchor) return null;
+    const form = anchor.closest('form'); if (form) return form;
+    let n=anchor.parentElement; while(n && n!==document.body){ if(['DIV','SECTION','ARTICLE','MAIN'].includes(n.tagName) && n.querySelectorAll('input,select,textarea').length>=4) return n; n=n.parentElement; }
+    return null;
+  }
+  function tablesMount(){ return $('#bp-nutrition'); }
+
+  // --- resets ---
+  function resetNumToBlank(){
+    const ids = ['#num-recipes-form','#num-recipes','[name="numRecipes"]','[data-bp="num-recipes"]'];
+    let el = null; for (const sel of ids){ el=$(sel); if(el) break; }
+    if (!el) el = $$('input[type="number"]').find(n => /recipe|num/i.test((n.id||'')+(n.name||'')));
+    if (el) try{ el.value=''; }catch(_){}
+  }
+  function resetSelectorInputs(root){
+    if(!root) return;
+    $$('input[type="checkbox"]',root).forEach(cb=>cb.checked=false);
+    $$('input[type="radio"]',root).forEach(rb=>rb.checked=false);
+    $$('input[type="text"], input[type="search"], input[type="email"], input[type="number"], textarea',root).forEach(i=>{i.value='';});
+    $$('select',root).forEach(sel=>{ if(sel.multiple) Array.from(sel.options).forEach(o=>o.selected=false); else sel.selectedIndex=0; });
+    resetNumToBlank();
+  }
+  function recollapseCategoriesOnly(root){
+    if(!root) return;
+    $$('details.category',root).forEach(d=>d.open=false);
+    $$('[aria-expanded="true"]',root).forEach(el=>el.setAttribute('aria-expanded','false'));
+    $$('.category-group.open, .ingredient-category.open',root).forEach(el=>el.classList.remove('open'));
+  }
+  function clearPreview(){
+    ['#promptPreview','#preview','.preview','.preview-pane','.bp-preview-block'].forEach(sel => $$(sel).forEach(n => { n.textContent=''; n.style.display='none'; }));
+  }
+  function clearRecipeAndSummary(){
+    ['.generated-recipe','.recipe-summary','#recipe-summary','.recipes-output','#recipes-output'].forEach(sel => $$(sel).forEach(n => { n.innerHTML=''; n.style.display='none'; }));
+  }
+  function clearTables(){ const m=tablesMount(); if(m) m.innerHTML=''; }
+
+  // --- actions ---
+  function clearSelectorAction(){
+    const root = selectorRoot(findSelBtn());
+    resetSelectorInputs(root);
+    clearPreview();
+    recollapseCategoriesOnly(root); // wrapper stays as-is
+  }
+  function clearEverythingAction(){
+    clearRecipeAndSummary();
+    clearTables();
+    clearSelectorAction();
+    try { selectorRoot(findSelBtn())?.scrollIntoView({behavior:'smooth',block:'start'}); } catch(_){}
+  }
+
+  // --- buttons (idempotent) ---
+  function ensureSelectorClear(){
+    const btnRef = findSelBtn(); const root = selectorRoot(btnRef); if(!root) return;
+    // place immediately after the wrapper if present; else after the root
+    const wrapper = root.closest('details.bp-collapser');
+    const anchor = wrapper || root;
+    if ($('#bp-clear-selector')) return;
+    const btn = document.createElement('button');
+    btn.id='bp-clear-selector'; btn.type='button'; btn.textContent='Clear Form';
+    Object.assign(btn.style,{background:'#2563eb',color:'#fff',border:'1px solid #1e40af',borderRadius:'12px',padding:'10px 16px',fontWeight:'700',cursor:'pointer',margin:'12px 0',float:'right'});
+    btn.addEventListener('click', clearSelectorAction);
+    if (anchor.nextSibling) anchor.parentNode.insertBefore(btn, anchor.nextSibling); else anchor.parentNode.appendChild(btn);
+  }
+
+  function placeBottomClearIfTables(){
+    const mount=tablesMount(); if(!mount||!mount.parentNode) return;
+    let btn = $('#bp-clear-bottom');
+    if(!btn){
+      btn=document.createElement('button'); btn.id='bp-clear-bottom'; btn.type='button'; btn.textContent='Clear Form';
+      Object.assign(btn.style,{display:'block',margin:'24px auto',background:'#2563eb',color:'#fff',border:'1px solid #1e40af',borderRadius:'12px',padding:'10px 16px',fontWeight:'700',cursor:'pointer'});
+      btn.addEventListener('click', clearEverythingAction);
+    }
+    if (mount.nextSibling!==btn) mount.parentNode.insertBefore(btn, mount.nextSibling);
+    // show only if tables are present
+    btn.style.display = mount.children.length>0 ? 'block' : 'none';
+  }
+
+  function hideStrayClearsAboveTables(){
+    const mount=tablesMount(); if(!mount) return;
+    $$('button').forEach(b=>{
+      const label=(text(b).toLowerCase());
+      if (label.startsWith('clear form') && b.compareDocumentPosition(mount) & Node.DOCUMENT_POSITION_FOLLOWING) {
+        // b is before mount → hide (unless it's our #bp-clear-selector inside wrapper)
+        const root=selectorRoot(findSelBtn());
+        const keep = b.id==='bp-clear-selector' || (root && root.contains(b));
+        if(!keep) b.style.display='none';
       }
     });
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', hideClearCustom);
-  } else {
-    hideClearCustom();
+  function observeTables(){
+    const mount=tablesMount(); if(!mount) return;
+    placeBottomClearIfTables();
+    const mo = new MutationObserver(()=>placeBottomClearIfTables());
+    mo.observe(mount,{childList:true});
   }
+
+  function boot(){
+    ensureSelectorClear();
+    observeTables();
+    hideStrayClearsAboveTables();
+  }
+
+  if (document.readyState==='loading') {
+    document.addEventListener('DOMContentLoaded', ()=>{ boot(); setTimeout(boot,250); setTimeout(boot,800); });
+  } else { boot(); setTimeout(boot,250); setTimeout(boot,800); }
 })();
