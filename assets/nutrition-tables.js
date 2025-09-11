@@ -1075,3 +1075,53 @@
     observe();
   }
 })();
+/* ===== BP — Hide legacy Clear buttons (non-destructive, append-only) ===== */
+(function () {
+  const REFRESH_ID = 'bp-hard-refresh'; // your working refresh button
+
+  const qall = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+  const label = (el) => (el ? (el.textContent || el.value || '').trim().toLowerCase() : '');
+
+  function shouldHide(el) {
+    if (!el) return false;
+    if (el.id === REFRESH_ID) return false;                 // keep the working refresh button
+    const txt = label(el);
+    // Only target the two legacy variants you showed
+    return txt === 'clear form' || txt === 'clear form (bottom)';
+  }
+
+  function hideLegacyClears() {
+    // 1) Hide any “Clear Form (Bottom)” anywhere (legacy)
+    qall('button, input[type="button"], a[role="button"]').forEach((el) => {
+      if (shouldHide(el)) el.style.display = 'none';
+    });
+
+    // 2) Specifically remove the “Clear Form” next to “Generate Recipes from Selections”
+    const gen = qall('button').find((b) =>
+      (b.getAttribute('onclick') || '').toLowerCase().includes('generatefromselections')
+    );
+    if (gen) {
+      const row = gen.closest('.btn-row') || gen.parentElement;
+      if (row) {
+        qall('button, input[type="button"], a[role="button"]', row).forEach((el) => {
+          if (shouldHide(el)) el.style.display = 'none';
+        });
+      }
+    }
+  }
+
+  function boot() {
+    hideLegacyClears();
+    // Re-apply if the UI re-renders (recipes/tables added)
+    new MutationObserver(() => hideLegacyClears()).observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
+})();
