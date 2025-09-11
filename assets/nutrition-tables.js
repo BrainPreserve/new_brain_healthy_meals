@@ -798,4 +798,91 @@
   // expose to your app
   window.AutoChooser = { chooseForCategories };
 })();
+/* ===== FIX: Always place tables AFTER the ingredients/recipe/summary =====
+   What this does:
+   - Wraps BP.renderTables() without changing its behavior.
+   - Before and after each render, it moves #bp-nutrition to sit immediately
+     AFTER the most relevant "summary/recipe" container.
+   - Retries briefly to catch late-rendered summaries (e.g., after OpenAI returns).
+   - If no plausible summary container is found, it does nothing.
+
+   How to remove (if ever needed):
+   - Delete this entire block only (from this comment to the closing IIFE).
+*/
+(function () {
+  // Choose the most likely “summary/recipe” container already on your page
+  const SUMMARY_SELECTORS = [
+    // Most specific → least specific; last visible match wins
+    '.recipe-summary',
+    '#recipe-summary',
+    '.ingredients-summary',
+    '.generated-recipe',
+    '.generated-summary',
+    '.recipes-output',
+    '#recipes-output',
+    '#output',
+    '#results',
+    '.results',
+    'main'
+  ];
+
+  function isVisible(el) {
+    if (!el) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    // Treat elements with layout size or fixed position as visible
+    return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+  }
+
+  function findSummaryAnchor() {
+    const nodes = [];
+    SUMMARY_SELECTORS.forEach(sel => {
+      document.querySelectorAll(sel).forEach(n => { if (isVisible(n)) nodes.push(n); });
+    });
+    // Prefer the last visible candidate (most “recent” output area on the page)
+    return nodes.length ? nodes[nodes.length - 1] : null;
+  }
+
+  function ensureTablesAfterSummary() {
+    const mount = document.getElementById('bp-nutrition');
+    if (!mount) return;
+
+    const anchor = findSummaryAnchor();
+    if (!anchor || !anchor.parentNode) return;
+
+    // If #bp-nutrition is already immediately after the anchor, do nothing
+    if (anchor.nextSibling === mount) return;
+
+    // Move #bp-nutrition so it sits directly AFTER the summary anchor
+    anchor.parentNode.insertBefore(mount, anchor.nextSibling);
+  }
+
+  // Wrap BP.renderTables (non-destructive)
+  function wrapRenderTables() {
+    if (!window.BP || typeof window.BP.renderTables !== 'function' || window._bpAfterSummaryPatched) return;
+
+    const original = window.BP.renderTables;
+    window.BP.renderTables = async function (...args) {
+      // Try to place mount after any existing summary before rendering
+      ensureTablesAfterSummary();
+      const out = await original.apply(this, args);
+      // Do it again immediately after render
+      ensureTablesAfterSummary();
+      // Retry briefly to catch late-rendered summaries (e.g., async recipe text)
+      let tries = 0;
+      const timer = setInterval(() => {
+        ensureTablesAfterSummary();
+        if (++tries >= 12) clearInterval(timer); // ~12*200ms = ~2.4s
+      }, 200);
+      return out;
+    };
+    window._bpAfterSummaryPatched = true;
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', wrapRenderTables);
+  } else {
+    wrapRenderTables();
+  }
+})();
 
