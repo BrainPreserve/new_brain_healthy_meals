@@ -885,4 +885,294 @@
     wrapRenderTables();
   }
 })();
+/* ===== BP Clear Controls — In-page reset (no reload) =====
+   Goals:
+   - Visible, consistent Clear buttons
+   - No Clear under custom input box
+   - One Clear after Ingredient Selector (resets + recollapses)
+   - One Clear after the Tables (works for both custom input and selector flows)
+   - Do not modify existing generation logic
+*/
+(function () {
+  const DEBUG = false;
+  const log = (...a) => DEBUG && console.log('[BP-Clear]', ...a);
+
+  // ---------- Styles (high-contrast buttons) ----------
+  function ensureClearStyles() {
+    if (document.getElementById('bp-clear-style')) return;
+    const st = document.createElement('style');
+    st.id = 'bp-clear-style';
+    st.textContent = `
+      .bp-btn-clear {
+        appearance: none;
+        background: #2563eb;  /* accessible blue */
+        color: #fff !important;
+        border: 1px solid #1e40af;
+        border-radius: 12px;
+        padding: 10px 16px;
+        font-size: 15px;
+        font-weight: 700;
+        line-height: 1.2;
+        cursor: pointer;
+        opacity: 1 !important;
+        box-shadow: 0 1px 2px rgba(0,0,0,.12);
+      }
+      .bp-btn-clear:hover { background: #1d4ed8; }
+      .bp-btn-clear:focus { outline: 3px solid rgba(37, 99, 235, .35); outline-offset: 2px; }
+      .bp-clear-wrap { margin: 16px 0; text-align: right; }
+      .bp-clear-bottom-wrap { margin: 24px 0; text-align: center; }
+    `;
+    document.head.appendChild(st);
+  }
+
+  // ---------- Generic DOM helpers ----------
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+  const first = (sels, r = document) => sels.map(sel => $(sel, r)).find(Boolean) || null;
+
+  function findSelectionsButton() {
+    return $$('button').find(b => (b.getAttribute('onclick') || '').includes('generateFromSelections')) || null;
+  }
+  function nearestContainer(el) {
+    if (!el) return null;
+    const form = el.closest('form');
+    if (form) return form;
+    let node = el;
+    while (node && node !== document.body) {
+      if (['DIV','SECTION','ARTICLE','MAIN'].includes(node.tagName)) {
+        const inputs = node.querySelectorAll('input,select,textarea').length;
+        if (inputs >= 4) return node;
+      }
+      node = node.parentElement;
+    }
+    return null;
+  }
+  function findTablesMount() { return document.getElementById('bp-nutrition'); }
+
+  function findOutputRoot() {
+    return (
+      $('#results') || $('#output') || $('#tables-container') ||
+      $('.recipes-output') || $('.results') || $('main') || document.body
+    );
+  }
+
+  // Likely custom-input (free text) host; used only to hide any Clear located there
+  function findCustomInputHost() {
+    const cands = [
+      '#custom-input', '#custom-recipe', '#customPrompt', '#freeform',
+      '.custom-input', '.freeform-input', '.user-recipe', '.prompt-input'
+    ];
+    const host = first(cands);
+    // fallback: a large textarea near a "Generate" button not tied to selections
+    if (host) return host;
+    const bigTA = $$('textarea').find(t => t.rows >= 3 || (t.value?.length || 0) > 0);
+    return bigTA ? bigTA.closest('div,section,article,form') : null;
+  }
+
+  // ---------- Clear behaviors ----------
+  function collapse(el) {
+    if (!el) return;
+    const tag = (el.tagName || '').toLowerCase();
+    if (tag === 'details') { el.open = false; return; }
+    el.style.display = 'none';
+  }
+  function groupCandidates(root) {
+    const raw = [
+      ...$$('details.category', root),
+      ...$$('.category-group', root),
+      ...$$('.ingredient-category', root),
+      ...$$('[data-category]', root),
+      ...$$('fieldset', root),
+      ...$$('section', root),
+      ...$$('div', root)
+    ];
+    const uniq = Array.from(new Set(raw)).filter(el =>
+      el.querySelector && el.querySelector('input[type="checkbox"]')
+    );
+    return uniq;
+  }
+  function recollapseAll(root) {
+    groupCandidates(root).forEach(g => {
+      $$('input[type="checkbox"]', g).forEach(cb => cb.checked = false);
+      collapse(g);
+    });
+    // Also close the global collapser wrapper if present
+    const wrapper = root.closest('.bp-collapser');
+    if (wrapper && wrapper.tagName.toLowerCase() === 'details') wrapper.open = false;
+  }
+  function resetRadios(root) { $$('input[type="radio"]', root).forEach(r => r.checked = false); }
+  function resetTextish(root) {
+    $$('input[type="text"], input[type="search"], input[type="email"], input[type="number"], textarea', root)
+      .forEach(i => i.value = '');
+    $$('select', root).forEach(sel => {
+      if (sel.multiple) Array.from(sel.options).forEach(o => o.selected = false);
+      else sel.selectedIndex = 0;
+    });
+  }
+  function resetNumRecipes() {
+    const idOrName = ['#num-recipes-form', '#num-recipes', '[name="numRecipes"]', '[data-bp="num-recipes"]'];
+    const el = first(idOrName) || $$('input[type="number"], select')
+      .find(e => /recipe|num/i.test(e.name || '') || /recipe|num/i.test(e.id || ''));
+    if (!el) return;
+    if (el.tagName && el.tagName.toLowerCase() === 'select') {
+      const idx = Array.from(el.options).findIndex(o => (o.value || o.textContent).trim() === '5');
+      el.selectedIndex = idx >= 0 ? idx : 0;
+    } else {
+      el.value = '5';
+    }
+  }
+
+  // Remove recipes and previews but keep the #bp-nutrition mount (we clear its contents separately)
+  function clearOutputsButKeepTablesMount() {
+    const mount = findTablesMount();
+    const out = findOutputRoot();
+    if (!out) return;
+
+    // Remove children except bp-nutrition and bottom-clear wrap (if present)
+    Array.from(out.children).forEach(child => {
+      if (child === mount) return;
+      if (child.id === 'bp-clear-bottom-wrap') return;
+      // Heuristic: remove obvious recipe/summary/previews
+      const text = (child.textContent || '').toLowerCase();
+      const looksLikePreview = child.matches?.('.preview, .preview-pane, #preview, #promptPreview, .bp-preview-block');
+      const looksLikeRecipe = child.matches?.('.generated-recipe, .recipe-summary, .recipes-output');
+      if (looksLikePreview || looksLikeRecipe || text.includes('selected ingredients') || text.includes('launch')) {
+        child.remove();
+      }
+    });
+  }
+
+  function clearTables() {
+    const mount = findTablesMount();
+    if (mount) mount.innerHTML = '';
+  }
+
+  function scrollToSelector(root) {
+    try { root?.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (_) {}
+  }
+
+  async function inPageFullClear() {
+    const selBtn = findSelectionsButton();
+    const selectorRoot = nearestContainer(selBtn) || document.body;
+
+    // 1) Clear UI elements
+    resetTextish(selectorRoot);
+    resetRadios(selectorRoot);
+    recollapseAll(selectorRoot);
+    resetNumRecipes();
+
+    // 2) Clear outputs
+    clearOutputsButKeepTablesMount();
+    clearTables();
+
+    // 3) Reposition bottom clear (after now-empty tables)
+    ensureBottomClearAfterTables();
+
+    // 4) Focus/scroll back to the start of the flow
+    scrollToSelector(selectorRoot);
+  }
+
+  // ---------- Clear Buttons: placement rules ----------
+  function removeClearUnderCustomInput() {
+    const host = findCustomInputHost();
+    if (!host) return;
+    // Remove any clear-like buttons in this region (safely)
+    $$('button, a', host).forEach(b => {
+      const t = (b.textContent || '').trim().toLowerCase();
+      if (/^clear\b/.test(t) || /clear form/.test(t)) {
+        b.remove();
+      }
+    });
+  }
+
+  function ensureTopClearForSelector() {
+    const selBtn = findSelectionsButton();
+    const root = nearestContainer(selBtn);
+    if (!root) return;
+
+    // Avoid duplicates
+    if ($('#bp-clear-top-wrap')) return;
+
+    // Insert just AFTER the selector container
+    const wrap = document.createElement('div');
+    wrap.id = 'bp-clear-top-wrap';
+    wrap.className = 'bp-clear-wrap';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'bp-btn-clear';
+    btn.textContent = 'Clear Form';
+    btn.addEventListener('click', inPageFullClear);
+    wrap.appendChild(btn);
+
+    if (root.nextSibling) root.parentNode.insertBefore(wrap, root.nextSibling);
+    else root.parentNode.appendChild(wrap);
+  }
+
+  function ensureBottomClearAfterTables() {
+    const mount = findTablesMount();
+    const out = findOutputRoot();
+
+    // Create (or move) a single bottom clear block
+    let wrap = $('#bp-clear-bottom-wrap');
+    if (!wrap) {
+      wrap = document.createElement('div');
+      wrap.id = 'bp-clear-bottom-wrap';
+      wrap.className = 'bp-clear-bottom-wrap';
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'bp-btn-clear';
+      btn.textContent = 'Clear Form';
+      btn.addEventListener('click', inPageFullClear);
+      wrap.appendChild(btn);
+    } else {
+      // Ensure click handler is present
+      const btn = $('button', wrap);
+      if (btn && !btn._bpBound) {
+        btn.addEventListener('click', inPageFullClear);
+        btn._bpBound = true;
+      }
+    }
+
+    // Place it AFTER the tables mount if present; else at end of output root
+    if (mount && mount.parentNode) {
+      if (mount.nextSibling !== wrap) {
+        mount.parentNode.insertBefore(wrap, mount.nextSibling);
+      }
+    } else if (out) {
+      if (wrap.parentNode !== out) out.appendChild(wrap);
+    }
+  }
+
+  // ---------- Keep bottom Clear in the right place after each render ----------
+  function wrapRenderForBottomClear() {
+    if (!window.BP || typeof window.BP.renderTables !== 'function' || window._bpClearPatched) return;
+    const original = window.BP.renderTables;
+    window.BP.renderTables = async function (...args) {
+      const res = await original.apply(this, args);
+      ensureBottomClearAfterTables();
+      // retry briefly for late DOM (e.g., async summaries)
+      let tries = 0;
+      const t = setInterval(() => {
+        ensureBottomClearAfterTables();
+        if (++tries >= 12) clearInterval(t);
+      }, 200);
+      return res;
+    };
+    window._bpClearPatched = true;
+  }
+
+  // ---------- Boot ----------
+  function boot() {
+    ensureClearStyles();
+    removeClearUnderCustomInput();
+    ensureTopClearForSelector();
+    ensureBottomClearAfterTables();
+    wrapRenderForBottomClear();
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
+})();
 
