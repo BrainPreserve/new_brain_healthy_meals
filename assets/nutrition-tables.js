@@ -1006,3 +1006,162 @@
     hideClearCustom();
   }
 })();
+/* ========= BP Clear Buttons — Append-only, non-destructive ========= */
+(function () {
+  // ----- tiny helpers (safe) -----
+  const $  = (s, r=document) => r.querySelector(s);
+  const $$ = (s, r=document) => Array.from(r.querySelectorAll(s));
+  const t  = (el) => (el ? (el.textContent || el.value || '').trim() : '');
+
+  function findSelectionsButton() {
+    return $$('button').find(b => (b.getAttribute('onclick') || '').toLowerCase().includes('generatefromselections')) || null;
+  }
+  function selectorRoot(anchor) {
+    if (!anchor) return null;
+    const form = anchor.closest('form');
+    if (form) return form;
+    // walk up to a container with multiple inputs (fallback)
+    let n = anchor.parentElement;
+    while (n && n !== document.body) {
+      if (['DIV','SECTION','ARTICLE','MAIN'].includes(n.tagName)) {
+        if (n.querySelectorAll('input,select,textarea').length >= 4) return n;
+      }
+      n = n.parentElement;
+    }
+    return null;
+  }
+  function tablesMount() { return $('#bp-nutrition'); }
+  function outputRoot() {
+    return $('#results') || $('#output') || $('#tables-container') || $('.recipes-output') || $('.results') || $('main') || document.body;
+  }
+
+  // ----- gentle reset utilities (no overrides) -----
+  function recollapseCategories(root) {
+    // Only collapse per-category <details> groups; leave the overall selector open
+    $$('details.category', root).forEach(d => d.open = false);
+  }
+  function resetSelectorInputs(root) {
+    if (!root) return;
+    // Uncheck checkboxes/radios
+    $$('input[type="checkbox"]', root).forEach(cb => (cb.checked = false));
+    $$('input[type="radio"]', root).forEach(rb => (rb.checked = false));
+    // Clear text/number/search/email
+    $$('input[type="text"], input[type="search"], input[type="email"], input[type="number"], textarea', root)
+      .forEach(i => { i.value = ''; });
+    // Reset selects
+    $$('select', root).forEach(sel => { if (sel.multiple) Array.from(sel.options).forEach(o => (o.selected = false)); else sel.selectedIndex = 0; });
+    // Reset “Number of recipes” to 5 if present
+    const num = $('#num-recipes-form') || $('#num-recipes') || $$('input[type="number"]').find(n => /recipe|num/i.test(n.id+n.name));
+    if (num) { try { num.value = '5'; } catch(_){} }
+  }
+  function clearPreviewBlocks() {
+    const cands = ['#promptPreview', '#preview', '.preview', '.preview-pane', '.bp-preview-block'];
+    cands.forEach(sel => {
+      $$(sel).forEach(node => { node.textContent = ''; node.style.display = 'none'; });
+    });
+  }
+  function clearRecipeAndSummary() {
+    const cands = ['.generated-recipe', '.recipe-summary', '.recipes-output'];
+    cands.forEach(sel => $$(sel).forEach(node => { node.innerHTML = ''; node.style.display = 'none'; }));
+  }
+  function clearTablesOnly() {
+    const mount = tablesMount();
+    if (mount) mount.innerHTML = '';
+  }
+
+  // Master clears (used by both buttons)
+  function clearSelectorForm() {
+    const selBtn = findSelectionsButton();
+    const root   = selectorRoot(selBtn);
+    if (!root) return;
+    resetSelectorInputs(root);
+    clearPreviewBlocks();
+    recollapseCategories(root); // not the whole form
+  }
+
+  function clearEverything() {
+    clearSelectorForm();
+    clearRecipeAndSummary();
+    clearTablesOnly();
+    // Keep scroll friendly
+    const selBtn = findSelectionsButton();
+    const root   = selectorRoot(selBtn);
+    try { root?.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch(_) {}
+  }
+
+  // ----- ensure “Clear Form” under the Ingredient Selector -----
+  function ensureTopClear() {
+    if ($('#bp-clear-selector')) return; // already present
+    const selBtn = findSelectionsButton();
+    const root   = selectorRoot(selBtn);
+    if (!root) return;
+
+    const wrap = document.createElement('div');
+    wrap.style.textAlign = 'right';
+    wrap.style.margin = '12px 0';
+    const btn = document.createElement('button');
+    btn.id = 'bp-clear-selector';
+    btn.type = 'button';
+    btn.textContent = 'Clear Form';
+    // visible styling, but minimal
+    Object.assign(btn.style, {
+      background: '#2563eb', color: '#fff', border: '1px solid #1e40af',
+      borderRadius: '12px', padding: '10px 16px', fontWeight: '700', cursor: 'pointer'
+    });
+    btn.addEventListener('click', clearSelectorForm);
+    wrap.appendChild(btn);
+
+    // Place it directly AFTER the selector container
+    if (root.nextSibling) root.parentNode.insertBefore(wrap, root.nextSibling);
+    else root.parentNode.appendChild(wrap);
+  }
+
+  // ----- ensure bottom Clear after tables (appears only when tables exist) -----
+  function placeBottomClear() {
+    const mount = tablesMount();
+    if (!mount || !mount.parentNode) return;
+
+    let btn = $('#bp-clear-bottom');
+    if (!btn) {
+      btn = document.createElement('button');
+      btn.id = 'bp-clear-bottom';
+      btn.type = 'button';
+      btn.textContent = 'Clear Form';
+      Object.assign(btn.style, {
+        display: 'block', margin: '24px auto',
+        background: '#2563eb', color: '#fff', border: '1px solid #1e40af',
+        borderRadius: '12px', padding: '10px 16px', fontWeight: '700', cursor: 'pointer'
+      });
+      btn.addEventListener('click', clearEverything);
+    }
+    // Always ensure it sits immediately AFTER #bp-nutrition
+    if (mount.nextSibling !== btn) {
+      mount.parentNode.insertBefore(btn, mount.nextSibling);
+    }
+  }
+
+  function watchTablesForBottomClear() {
+    const mount = tablesMount();
+    if (!mount) return;
+    // Place if already populated
+    if (mount.children.length > 0) placeBottomClear();
+
+    // Observe future renders (does not alter renderTables)
+    const mo = new MutationObserver(() => {
+      if (mount.children.length > 0) placeBottomClear();
+    });
+    mo.observe(mount, { childList: true, subtree: false });
+  }
+
+  // ----- boot (safe) -----
+  function boot() {
+    ensureTopClear();
+    watchTablesForBottomClear();
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
+})();
+
