@@ -885,3 +885,50 @@
     wrapRenderTables();
   }
 })();
+/* ===== BP Phase A (CSS-only via injection): hide empty post-Generate box + stray Clear buttons ===== */
+(function () {
+  if (document.getElementById('bp-phase-a-style')) return; // prevent duplicate adds
+
+  const css = `
+    /* 1) Hide the blank box directly under the Generate Recipes button row, but ONLY if it's truly empty. */
+    .btn-row + :empty { display: none !important; }
+    .btn-row + .preview:empty,
+    .btn-row + #preview:empty,
+    .btn-row + .bp-preview-block:empty,
+    .btn-row + .bp-placeholder:empty { display: none !important; }
+
+    /* 2) Hide the Clear Form button that sits right below the custom-input box (common safe targets). */
+    /* If your custom input area uses a textarea, hide a typical Clear control right after it. */
+    textarea + button.clear-form,
+    textarea + .bp-clear-wrap,
+    textarea + .bp-btn-clear { display: none !important; }
+
+    /* Also hide Clear buttons that advertise themselves via common attributes. */
+    button[aria-label="Clear Form"],
+    button[title="Clear Form"],
+    input[type="button"][value="Clear Form"],
+    input[type="submit"][value="Clear Form"] { display: none !important; }
+
+    /* 3) Hide duplicate bottom Clear buttons that appear AFTER the tables mount (#bp-nutrition). */
+    #bp-nutrition ~ #bp-clear-bottom-wrap,
+    #bp-nutrition ~ .bp-clear-bottom-wrap,
+    #bp-nutrition ~ .bp-bottom-clear { display: none !important; }
+
+    /* (Harmless if absent) Hide older helper wrappers from previous experiments. */
+    #bp-clear-top-wrap,
+    #bp-clear-bottom-wrap { display: none !important; }
+
+    /* Ensure remaining buttons are fully visible (undo any accidental low-opacity styles). */
+    button,
+    input[type="button"],
+    input[type="submit"] {
+      opacity: 1 !important;
+      filter: none !important;
+    }
+  `;
+
+  const st = document.createElement('style');
+  st.id = 'bp-phase-a-style';
+  st.textContent = css;
+  document.head.appendChild(st);
+})();
