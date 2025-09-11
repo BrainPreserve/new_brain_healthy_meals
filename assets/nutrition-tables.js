@@ -885,3 +885,55 @@
     wrapRenderTables();
   }
 })();
+/* ===== BP Minimal Cleanup — remove blank box + stray "Clear Form" buttons =====
+   Safe, append-only. Touches nothing else.
+*/
+(function () {
+  // Small helpers
+  const text = (el) => (el ? (el.textContent || el.value || '').replace(/\s+/g, ' ').trim() : '');
+  const $all = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+  // 1) Remove extra "Clear Form" buttons (but NOT "Clear Custom")
+  function removeStrayClearButtons() {
+    const candidates = $all('button, a[role="button"], input[type="button"], input[type="submit"]');
+    candidates.forEach(el => {
+      const t = text(el).toLowerCase();
+      // Only remove exact "clear form" or "clear form (bottom)"; keep "clear custom"
+      if (t === 'clear form' || t === 'clear form (bottom)') {
+        el.remove();
+      }
+    });
+  }
+
+  // 2) Remove the blank box directly below the "Generate Recipes" button row
+  function removeBlankBoxBelowGenerate() {
+    // Find the Generate Recipes button
+    const genBtn = $all('button').find(b => text(b).toLowerCase() === 'generate recipes');
+    if (!genBtn) return;
+
+    // The row that holds those buttons (or fall back to its parent)
+    const btnRow = genBtn.closest('.btn-row') || genBtn.parentElement || null;
+    if (!btnRow) return;
+
+    // Look at the very next sibling; if it's an empty block, remove it (one element only)
+    let sib = btnRow.nextElementSibling;
+    if (!sib) return;
+
+    const hasFormControls = sib.querySelector('input, textarea, select, button');
+    const isEmpty = text(sib) === '' && !hasFormControls;
+
+    // Be conservative: only remove if it is visually an empty container
+    if (isEmpty) {
+      sib.remove();
+    }
+  }
+
+  // Run once at load
+  function runOnce() {
+    removeStrayClearButtons();
+    removeBlankBoxBelowGenerate();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventLi
+
