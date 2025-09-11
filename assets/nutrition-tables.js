@@ -1006,3 +1006,72 @@
     hideClearCustom();
   }
 })();
+/* ===== BP Bottom Refresh Button — append-only; idempotent; no overrides ===== */
+(function(){
+  const BTN_ID = 'bp-hard-refresh';
+
+  function tablesMount(){ return document.getElementById('bp-nutrition'); }
+
+  function haveRecipeOrSummary() {
+    return !!document.querySelector(
+      '.generated-recipe, .recipe-summary, #recipe-summary, .recipes-output, #recipes-output'
+    );
+  }
+
+  function ensureButton(){
+    const mount = tablesMount();
+    if (!mount || !mount.parentNode) return;
+
+    let btn = document.getElementById(BTN_ID);
+    if (!btn){
+      btn = document.createElement('button');
+      btn.id = BTN_ID;
+      btn.type = 'button';
+      btn.textContent = 'Clear Form — Refresh Page';
+      Object.assign(btn.style, {
+        display: 'none',
+        margin: '24px auto',
+        background: '#2563eb',
+        color: '#fff',
+        border: '1px solid #1e40af',
+        borderRadius: '12px',
+        padding: '10px 16px',
+        fontWeight: '700',
+        cursor: 'pointer'
+      });
+      btn.addEventListener('click', () => {
+        try { location.reload(); } catch (_) { window.location.href = window.location.href; }
+      });
+    }
+
+    // Always keep it immediately AFTER #bp-nutrition (which your other code already moves under the summary)
+    if (mount.nextSibling !== btn) {
+      mount.parentNode.insertBefore(btn, mount.nextSibling);
+    }
+
+    // Show only when there are tables OR a recipe/summary present
+    const show = (mount.children.length > 0) || haveRecipeOrSummary();
+    btn.style.display = show ? 'block' : 'none';
+  }
+
+  function observe(){
+    const mount = tablesMount();
+    if (!mount) return;
+
+    ensureButton();
+
+    // Update visibility/placement when tables render or change
+    const mo = new MutationObserver(ensureButton);
+    mo.observe(mount, { childList: true });
+
+    // Cover delayed recipe/summary rendering
+    setTimeout(ensureButton, 400);
+    setTimeout(ensureButton, 1200);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', observe);
+  } else {
+    observe();
+  }
+})();
