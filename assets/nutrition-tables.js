@@ -1164,4 +1164,196 @@
     boot();
   }
 })();
+/* ===== BP Clear Fix v1.1 — append-only; no overrides ===== */
+(function () {
+  // ---------------- helpers ----------------
+  const $  = (s, r=document) => r.querySelector(s);
+  const $$ = (s, r=document) => Array.from(r.querySelectorAll(s));
+  const txt = (el) => (el ? (el.textContent || el.value || '').trim() : '');
+
+  function findSelectionsButton() {
+    return $$('button').find(b => (b.getAttribute('onclick') || '').toLowerCase().includes('generatefromselections')) || null;
+  }
+  function selectorRoot(anchor) {
+    if (!anchor) return null;
+    const form = anchor.closest('form');
+    if (form) return form;
+    // fallback: walk up to a “dense inputs” container
+    let n = anchor.parentElement;
+    while (n && n !== document.body) {
+      if (['DIV','SECTION','ARTICLE','MAIN'].includes(n.tagName)) {
+        if (n.querySelectorAll('input,select,textarea').length >= 4) return n;
+      }
+      n = n.parentElement;
+    }
+    return null;
+  }
+  function tablesMount() { return $('#bp-nutrition'); }
+
+  function isBefore(a, b) {
+    if (!a || !b) return false;
+    return !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+  }
+
+  // ---------------- resets (non-destructive) ----------------
+  function resetNumRecipesToBlank() {
+    // common ids/names for your “Number of recipes”
+    const candidates = [
+      '#num-recipes-form', '#num-recipes',
+      '[name="numRecipes"]', '[data-bp="num-recipes"]'
+    ];
+    let el = null;
+    for (const sel of candidates) { el = $(sel); if (el) break; }
+    if (!el) {
+      // fallback: any number input whose id/name mentions recipe/num
+      el = $$('input[type="number"]').find(n => /recipe|num/i.test((n.id||'') + (n.name||'')));
+    }
+    if (el) { try { el.value = ''; } catch(_){} }
+  }
+
+  function resetSelectorInputs(root) {
+    if (!root) return;
+    $$('input[type="checkbox"]', root).forEach(cb => (cb.checked = false));
+    $$('input[type="radio"]', root).forEach(rb => (rb.checked = false));
+    $$('input[type="text"], input[type="search"], input[type="email"], input[type="number"], textarea', root)
+      .forEach(i => { i.value = ''; });
+    $$('select', root).forEach(sel => {
+      if (sel.multiple) Array.from(sel.options).forEach(o => (o.selected = false));
+      else sel.selectedIndex = 0;
+    });
+    resetNumRecipesToBlank();
+  }
+
+  function recollapseCategories(root) {
+    if (!root) return;
+    // Close per-category <details> if present
+    $$('details.category', root).forEach(d => d.open = false);
+    // If your categories use “open” classes/aria-expanded, reset them conservatively
+    $$('[aria-expanded="true"]', root).forEach(el => el.setAttribute('aria-expanded', 'false'));
+    $$('.category-group.open, .ingredient-category.open', root).forEach(el => el.classList.remove('open'));
+    // DO NOT hide the overall selector wrapper (keeps the form visible)
+  }
+
+  function clearPreviewBlocks() {
+    ['#promptPreview', '#preview', '.preview', '.preview-pane', '.bp-preview-block']
+      .forEach(sel => $$(sel).forEach(node => { node.textContent = ''; node.style.display = 'none'; }));
+  }
+
+  function clearRecipeAndSummaryGeneric() {
+    // Try explicit classes/ids first
+    const targets = [
+      '.generated-recipe', '.recipe-summary',
+      '#recipe-summary', '.recipes-output', '#recipes-output'
+    ];
+    let cleared = 0;
+    targets.forEach(sel => $$(sel).forEach(node => { node.innerHTML = ''; node.style.display = 'none'; cleared++; }));
+
+    // If still present, clear anything between the input area and tables mount (safe sweep)
+    const mount = tablesMount();
+    if (!mount) return;
+
+    // Find the nearest “input anchor” above the mount
+    const selBtn = findSelectionsButton();
+    const selRoot = selectorRoot(selBtn);
+    // Prefer a large textarea (custom input) as another anchor if present
+    const customHost = $$('textarea').find(t => (t.rows || 0) >= 3)?.closest('div,section,article,form') || null;
+
+    // Choose the anchor that occurs latest but still before the tables mount
+    let anchor = null;
+    [selRoot, customHost].forEach(cand => { if (cand && isBefore(cand, mount)) anchor = cand; });
+    if (!anchor) return;
+
+    // Remove siblings strictly between anchor and mount (keeps inputs + tables)
+    let node = anchor.nextElementSibling;
+    while (node && node !== mount) {
+      const next = node.nextElementSibling;
+      // Keep obvious controls; remove recipe/summary blobs
+      if (!(node.id === 'bp-clear-bottom' || node.contains(mount))) {
+        node.innerHTML = '';
+        node.style.display = 'none';
+      }
+      node = next;
+    }
+  }
+
+  function clearTables() {
+    const m = tablesMount();
+    if (m) m.innerHTML = '';
+  }
+
+  // ---------------- actions bound to buttons ----------------
+  function clearSelectorFormAction() {
+    const selBtn = findSelectionsButton();
+    const root   = selectorRoot(selBtn);
+    resetSelectorInputs(root);
+    clearPreviewBlocks();
+    recollapseCategories(root);
+  }
+
+  function clearEverythingAction() {
+    // Full reset of outputs + selector state
+    clearRecipeAndSummaryGeneric();
+    clearTables();
+    clearSelectorFormAction();
+    // scroll to start of flow
+    const selBtn = findSelectionsButton();
+    const root   = selectorRoot(selBtn);
+    try { root?.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch(_) {}
+  }
+
+  // ---------------- button binding & de-duplication ----------------
+  function bindExistingClearButtons() {
+    // Bind a selector-level Clear if you already have one near the selector
+    const selBtn = findSelectionsButton();
+    const root   = selectorRoot(selBtn);
+    if (root) {
+      const cand = $$('button', root.parentNode).find(b => txt(b).toLowerCase() === 'clear form');
+      if (cand && !cand._bpBound) { cand.addEventListener('click', clearSelectorFormAction); cand._bpBound = true; }
+    }
+
+    // Bind a bottom Clear after tables (prefer an existing one; otherwise do nothing)
+    const mount = tablesMount();
+    if (mount) {
+      // Prefer a button that is immediately after #bp-nutrition
+      let bottom = mount.nextElementSibling;
+      if (!(bottom && bottom.tagName === 'BUTTON' && txt(bottom).toLowerCase().startsWith('clear form'))) {
+        // fallback: any “Clear Form” after the tables
+        bottom = $$('button').find(b => txt(b).toLowerCase().startsWith('clear form') && isBefore(mount, b));
+      }
+      if (bottom && !bottom._bpBound) { bottom.addEventListener('click', clearEverythingAction); bottom._bpBound = true; }
+    }
+  }
+
+  function removeStrayClearsAboveRecipe() {
+    const mount = tablesMount();
+    if (!mount) return;
+    $$('button').forEach(b => {
+      const label = txt(b).toLowerCase();
+      if (label.startsWith('clear form') && isBefore(b, mount)) {
+        // Keep a single Clear inside the selector area if it’s within the selector root
+        const selBtn = findSelectionsButton();
+        const root   = selectorRoot(selBtn);
+        const keep = root && root.contains(b);
+        if (!keep) b.style.display = 'none';
+      }
+    });
+  }
+
+  // Run now & also after DOM settles a bit (handles async recipe rendering)
+  function boot() {
+    bindExistingClearButtons();
+    removeStrayClearsAboveRecipe();
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+      boot();
+      setTimeout(boot, 250);
+      setTimeout(boot, 800);
+    });
+  } else {
+    boot();
+    setTimeout(boot, 250);
+    setTimeout(boot, 800);
+  }
+})();
 
