@@ -935,5 +935,14 @@
   }
 
   if (document.readyState === 'loading') {
-    document.addEventLi
+    document.addEventListener('DOMContentLoaded', runOnce);
+  } else {
+    runOnce();
+  }
 
+  // Also guard against late-injected duplicates (e.g., after rendering)
+  const mo = new MutationObserver(() => {
+    removeStrayClearButtons();
+  });
+  mo.observe(document.documentElement, { childList: true, subtree: true });
+})();
